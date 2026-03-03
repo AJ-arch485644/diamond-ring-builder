@@ -12,7 +12,7 @@ const supabase = createClient(
 
 const BATCH_SIZE = 500;
 
-function mapRow(row) {
+function mapRow(row, syncTimestamp) {
   return {
     nivoda_id: row['ID'],
     stock_id: row['stockId'],
@@ -54,7 +54,7 @@ function mapRow(row) {
     min_delivery_days: parseInt(row['minDeliveryDays']) || null,
     max_delivery_days: parseInt(row['maxDeliveryDays']) || null,
     availability: 'available',
-    updated_at: new Date().toISOString()
+    updated_at: syncTimestamp
   };
 }
 
@@ -78,7 +78,6 @@ function normalizeShape(shape) {
 async function downloadCSV() {
   const client = new ftp.Client();
   client.ftp.verbose = false;
-
   try {
     await client.access({
       host: process.env.NIVODA_FTP_HOST,
@@ -86,7 +85,6 @@ async function downloadCSV() {
       password: process.env.NIVODA_FTP_PASS,
       secure: false
     });
-
     const localPath = path.join(require('os').tmpdir(), 'nivoda-diamonds.csv');
     await client.downloadTo(localPath, process.env.NIVODA_FTP_PATH);
     console.log(`Downloaded CSV to ${localPath}`);
@@ -98,22 +96,18 @@ async function downloadCSV() {
 
 async function syncToDatabase(csvPath) {
   console.log('Starting database sync...');
+  const syncTimestamp = new Date().toISOString();
+  console.log(`Sync timestamp: ${syncTimestamp}`);
 
   const fileContent = fs.readFileSync(csvPath, 'utf-8');
   const records = [];
-
   const parser = parse(fileContent, {
-    columns: true,
-    skip_empty_lines: true,
-    trim: true,
-    delimiter: ',',
-    quote: '"',
-    relax_quotes: true,
-    relax_column_count: true
+    columns: true, skip_empty_lines: true, trim: true,
+    delimiter: ',', quote: '"', relax_quotes: true, relax_column_count: true
   });
 
   for await (const row of parser) {
-    const mapped = mapRow(row);
+    const mapped = mapRow(row, syncTimestamp);
     if (!mapped.nivoda_id || !mapped.carat || !mapped.price_usd) continue;
     if (!mapped.is_lab_grown) continue;
     records.push(mapped);
@@ -121,30 +115,15 @@ async function syncToDatabase(csvPath) {
 
   console.log(`Parsed ${records.length} valid lab-grown diamonds from CSV`);
 
-  // Step 1: Mark ALL existing diamonds as unavailable via RPC
-  // This avoids the Supabase JS client row limit on updates
-  console.log('Marking all existing diamonds as unavailable...');
-  const { error: markError } = await supabase.rpc('mark_all_unavailable');
-
-  if (markError) {
-    console.error('Mark unavailable failed:', markError.message);
-    console.error('Continuing with upsert anyway...');
-  } else {
-    console.log('All existing diamonds marked unavailable');
-  }
-
-  // Step 2: Upsert current diamonds in batches (sets them back to available)
+  // Step 1: Upsert all current diamonds
+  // Zero downtime — old diamonds stay available while this runs
   let inserted = 0;
   let errors = 0;
   for (let i = 0; i < records.length; i += BATCH_SIZE) {
     const batch = records.slice(i, i + BATCH_SIZE);
-
     const { error } = await supabase
       .from('diamonds')
-      .upsert(batch, {
-        onConflict: 'nivoda_id',
-        ignoreDuplicates: false
-      });
+      .upsert(batch, { onConflict: 'nivoda_id', ignoreDuplicates: false });
 
     if (error) {
       console.error(`Batch error at ${i}:`, error.message);
@@ -152,14 +131,23 @@ async function syncToDatabase(csvPath) {
     } else {
       inserted += batch.length;
     }
-
-    // Log progress every 50 batches
     if ((i / BATCH_SIZE) % 50 === 0) {
       console.log(`Progress: ${inserted}/${records.length} upserted (${errors} batch errors)`);
     }
   }
+  console.log(`Upsert complete: ${inserted}/${records.length} (${errors} batch errors)`);
 
-  console.log(`Upsert complete: ${inserted}/${records.length} diamonds active (${errors} batch errors)`);
+  // Step 2: Mark stale diamonds as unavailable
+  // Anything still marked available but with updated_at before this sync wasn't in the file
+  console.log('Marking stale diamonds as unavailable...');
+  const { error: markError } = await supabase.rpc('mark_stale_unavailable', {
+    sync_ts: syncTimestamp
+  });
+  if (markError) {
+    console.error('Mark stale error:', markError.message);
+  } else {
+    console.log('Stale diamonds marked unavailable');
+  }
 
   // Step 3: Delete diamonds unavailable for 90+ days
   console.log('Cleaning up old unavailable diamonds (90+ days)...');
@@ -167,7 +155,6 @@ async function syncToDatabase(csvPath) {
   const { error: deleteError } = await supabase.rpc('delete_old_unavailable', {
     cutoff_date: cutoff
   });
-
   if (deleteError) {
     console.error('Cleanup error:', deleteError.message);
   } else {
