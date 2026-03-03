@@ -41,7 +41,7 @@ module.exports = async function handler(req, res) {
 
   } catch (err) {
     console.error('Create product error:', err);
-    res.status(500).json({ error: 'Failed to create product' });
+    res.status(500).json({ error: 'Failed to create product', detail: err.message });
   }
 };
 
