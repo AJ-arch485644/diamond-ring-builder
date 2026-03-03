@@ -1,3 +1,13 @@
+const { Pool } = require('pg');
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+  max: 3,
+  connectionTimeoutMillis: 5000,
+  idleTimeoutMillis: 10000
+});
+
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -10,46 +20,91 @@ module.exports = async function handler(req, res) {
     const perPage = Math.min(parseInt(params.per_page) || 20, 50);
     const offset = (page - 1) * perPage;
 
-    const qs = [
-      'select=sku,shape,carat,color,clarity,cut,polish,symmetry,fluorescence,lab,price_usd,cost_usd,length,width,depth_mm,depth_percent,table_percent,image_url,video_url,certificate_url,certificate_number',
-      'availability=eq.available',
-      'is_lab_grown=eq.true',
-      'order=price_usd.asc',
-      `limit=${perPage}`,
-      `offset=${offset}`
-    ];
+    let where = ['availability = $1', 'is_lab_grown = $2'];
+    let values = ['available', true];
+    let idx = 3;
 
-    if (params.shape) qs.push(`shape=in.(${params.shape})`);
-    if (params.carat_min) qs.push(`carat=gte.${params.carat_min}`);
-    if (params.carat_max) qs.push(`carat=lte.${params.carat_max}`);
-    if (params.price_min) qs.push(`price_usd=gte.${params.price_min}`);
-    if (params.price_max) qs.push(`price_usd=lte.${params.price_max}`);
-    if (params.color) qs.push(`color=in.(${params.color})`);
-    if (params.clarity) qs.push(`clarity=in.(${params.clarity})`);
-    if (params.cut) qs.push(`cut=in.(${params.cut})`);
-    if (params.lab) qs.push(`lab=in.(${params.lab})`);
-    if (params.fluorescence) qs.push(`fluorescence=in.(${params.fluorescence})`);
+    if (params.shape) {
+      const shapes = params.shape.split(',').map(s => s.trim());
+      where.push(`shape = ANY($${idx})`);
+      values.push(shapes);
+      idx++;
+    }
+    if (params.carat_min) {
+      where.push(`carat >= $${idx}`);
+      values.push(parseFloat(params.carat_min));
+      idx++;
+    }
+    if (params.carat_max) {
+      where.push(`carat <= $${idx}`);
+      values.push(parseFloat(params.carat_max));
+      idx++;
+    }
+    if (params.price_min) {
+      where.push(`price_usd >= $${idx}`);
+      values.push(parseFloat(params.price_min));
+      idx++;
+    }
+    if (params.price_max) {
+      where.push(`price_usd <= $${idx}`);
+      values.push(parseFloat(params.price_max));
+      idx++;
+    }
+    if (params.color) {
+      const colors = params.color.split(',').map(s => s.trim());
+      where.push(`color = ANY($${idx})`);
+      values.push(colors);
+      idx++;
+    }
+    if (params.clarity) {
+      const clarities = params.clarity.split(',').map(s => s.trim());
+      where.push(`clarity = ANY($${idx})`);
+      values.push(clarities);
+      idx++;
+    }
+    if (params.cut) {
+      const cuts = params.cut.split(',').map(s => s.trim());
+      where.push(`cut = ANY($${idx})`);
+      values.push(cuts);
+      idx++;
+    }
+    if (params.lab) {
+      const labs = params.lab.split(',').map(s => s.trim());
+      where.push(`lab = ANY($${idx})`);
+      values.push(labs);
+      idx++;
+    }
+    if (params.fluorescence) {
+      const fluors = params.fluorescence.split(',').map(s => s.trim());
+      where.push(`fluorescence = ANY($${idx})`);
+      values.push(fluors);
+      idx++;
+    }
 
-    const url = `${process.env.SUPABASE_URL}/rest/v1/diamonds?${qs.join('&')}`;
+    values.push(perPage);
+    values.push(offset);
 
-    const response = await fetch(url, {
-      headers: {
-        'apikey': process.env.SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${process.env.SUPABASE_ANON_KEY}`
-      }
-    });
+    const sql = `
+      SELECT sku,shape,carat,color,clarity,cut,polish,symmetry,
+             fluorescence,lab,price_usd,cost_usd,length,width,
+             depth_mm,depth_percent,table_percent,
+             image_url,video_url,certificate_url,certificate_number
+      FROM diamonds
+      WHERE ${where.join(' AND ')}
+      ORDER BY price_usd ASC
+      LIMIT $${idx} OFFSET $${idx + 1}
+    `;
 
-    if (!response.ok) throw new Error(await response.text());
-    const data = await response.json();
+    const result = await pool.query(sql, values);
 
     res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
     res.status(200).json({
       Diamonds: {
-        data: data,
-        total: data.length >= perPage ? 999 : offset + data.length,
+        data: result.rows,
+        total: result.rows.length >= perPage ? 999 : offset + result.rows.length,
         per_page: perPage,
         current_page: page,
-        has_more: data.length >= perPage
+        has_more: result.rows.length >= perPage
       }
     });
 
