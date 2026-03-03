@@ -1,0 +1,25 @@
+name: Sync Nivoda Diamonds
+on:
+  schedule:
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - run: node scripts/sync-nivoda.js
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          NIVODA_FTP_HOST: ${{ secrets.NIVODA_FTP_HOST }}
+          NIVODA_FTP_USER: ${{ secrets.NIVODA_FTP_USER }}
+          NIVODA_FTP_PASS: ${{ secrets.NIVODA_FTP_PASS }}
+          NIVODA_FTP_PATH: ${{ secrets.NIVODA_FTP_PATH }}
+          MARKUP_PERCENT: ${{ secrets.MARKUP_PERCENT }}
