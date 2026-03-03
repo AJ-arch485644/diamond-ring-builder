@@ -10,102 +10,37 @@ module.exports = async function handler(req, res) {
     const perPage = Math.min(parseInt(params.per_page) || 20, 50);
     const offset = (page - 1) * perPage;
 
-    const sortField = params.sort || 'price_usd';
-    const validSortFields = ['price_usd', 'carat', 'color', 'clarity'];
-    const sort = validSortFields.includes(sortField) ? sortField : 'price_usd';
-    const sortDir = params.sort_dir === 'desc' ? 'desc' : 'asc';
+    const qs = [
+      'select=sku,shape,carat,color,clarity,cut,polish,symmetry,fluorescence,lab,price_usd,cost_usd,length,width,depth_mm,depth_percent,table_percent,image_url,video_url,certificate_url,certificate_number',
+      'availability=eq.available',
+      'is_lab_grown=eq.true',
+      'order=price_usd.asc',
+      `limit=${perPage}`,
+      `offset=${offset}`
+    ];
 
-    const caratMin = params.carat_min ? parseFloat(params.carat_min) : null;
-    const caratMax = params.carat_max ? parseFloat(params.carat_max) : null;
+    if (params.shape) qs.push(`shape=in.(${params.shape})`);
+    if (params.carat_min) qs.push(`carat=gte.${params.carat_min}`);
+    if (params.carat_max) qs.push(`carat=lte.${params.carat_max}`);
+    if (params.price_min) qs.push(`price_usd=gte.${params.price_min}`);
+    if (params.price_max) qs.push(`price_usd=lte.${params.price_max}`);
+    if (params.color) qs.push(`color=in.(${params.color})`);
+    if (params.clarity) qs.push(`clarity=in.(${params.clarity})`);
+    if (params.cut) qs.push(`cut=in.(${params.cut})`);
+    if (params.lab) qs.push(`lab=in.(${params.lab})`);
+    if (params.fluorescence) qs.push(`fluorescence=in.(${params.fluorescence})`);
 
-    // Progressive carat narrowing - search in small windows to avoid scanning huge ranges
-    const caratSteps = [0.5, 1, 2, 3, 5, 10, 20, null];
-    let data = [];
+    const url = `${process.env.SUPABASE_URL}/rest/v1/diamonds?${qs.join('&')}`;
 
-    if (caratMin !== null && caratMax !== null && (caratMax - caratMin) > 0.5) {
-      // Wide range - search progressively
-      let currentMin = caratMin;
-
-      for (const step of caratSteps) {
-        const currentMax = step === null ? caratMax : Math.min(caratMin + step, caratMax);
-        if (currentMin >= caratMax) break;
-
-        const rpcParams = {
-          p_shapes: params.shape || null,
-          p_carat_min: currentMin,
-          p_carat_max: currentMax,
-          p_price_min: params.price_min ? parseFloat(params.price_min) : null,
-          p_price_max: params.price_max ? parseFloat(params.price_max) : null,
-          p_colors: params.color || null,
-          p_clarities: params.clarity || null,
-          p_cuts: params.cut || null,
-          p_labs: params.lab || null,
-          p_fluorescences: params.fluorescence || null,
-          p_sort: sort,
-          p_sort_dir: sortDir,
-          p_limit: perPage,
-          p_offset: page === 1 ? 0 : offset
-        };
-
-        const response = await fetch(
-          `${process.env.SUPABASE_URL}/rest/v1/rpc/search_diamonds`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'apikey': process.env.SUPABASE_ANON_KEY,
-              'Authorization': `Bearer ${process.env.SUPABASE_ANON_KEY}`
-            },
-            body: JSON.stringify(rpcParams)
-          }
-        );
-
-        if (!response.ok) throw new Error(await response.text());
-        const batch = await response.json();
-        data = data.concat(batch);
-
-        if (data.length >= perPage) {
-          data = data.slice(0, perPage);
-          break;
-        }
-
-        currentMin = currentMax;
+    const response = await fetch(url, {
+      headers: {
+        'apikey': process.env.SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${process.env.SUPABASE_ANON_KEY}`
       }
-    } else {
-      // Narrow range or no carat filter - search normally
-      const rpcParams = {
-        p_shapes: params.shape || null,
-        p_carat_min: caratMin,
-        p_carat_max: caratMax,
-        p_price_min: params.price_min ? parseFloat(params.price_min) : null,
-        p_price_max: params.price_max ? parseFloat(params.price_max) : null,
-        p_colors: params.color || null,
-        p_clarities: params.clarity || null,
-        p_cuts: params.cut || null,
-        p_labs: params.lab || null,
-        p_fluorescences: params.fluorescence || null,
-        p_sort: sort,
-        p_sort_dir: sortDir,
-        p_limit: perPage,
-        p_offset: offset
-      };
+    });
 
-      const response = await fetch(
-        `${process.env.SUPABASE_URL}/rest/v1/rpc/search_diamonds`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': process.env.SUPABASE_ANON_KEY,
-            'Authorization': `Bearer ${process.env.SUPABASE_ANON_KEY}`
-          },
-          body: JSON.stringify(rpcParams)
-        }
-      );
-
-      if (!response.ok) throw new Error(await response.text());
-      data = await response.json();
-    }
+    if (!response.ok) throw new Error(await response.text());
+    const data = await response.json();
 
     res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
     res.status(200).json({
