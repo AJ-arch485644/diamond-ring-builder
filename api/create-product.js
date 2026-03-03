@@ -34,11 +34,9 @@ module.exports = async function handler(req, res) {
 
     // 3. Return the Shopify product/variant IDs
     res.status(200).json({
-      Diamond: {
-        ...diamond,
-        shopify_id: shopifyProduct.id,
-        shopify_res: { product: shopifyProduct }
-      }
+      shopify_id: shopifyProduct.id,
+      variant_id: shopifyProduct.variants[0].id,
+      title: shopifyProduct.title
     });
 
   } catch (err) {
