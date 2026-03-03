@@ -1,10 +1,3 @@
-const { createClient } = require('@supabase/supabase-js');
-
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
-);
-
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -17,12 +10,7 @@ module.exports = async function handler(req, res) {
     const perPage = Math.min(parseInt(params.per_page) || 20, 50);
     const offset = (page - 1) * perPage;
 
-    const sortField = params.sort || 'price_usd';
-    const validSortFields = ['price_usd', 'carat', 'color', 'clarity'];
-    const sort = validSortFields.includes(sortField) ? sortField : 'price_usd';
-    const sortDir = params.sort_dir === 'desc' ? 'desc' : 'asc';
-
-    const { data, error } = await supabase.rpc('search_diamonds', {
+    const rpcParams = {
       p_shapes: params.shape || null,
       p_carat_min: params.carat_min ? parseFloat(params.carat_min) : null,
       p_carat_max: params.carat_max ? parseFloat(params.carat_max) : null,
@@ -33,14 +21,33 @@ module.exports = async function handler(req, res) {
       p_cuts: params.cut || null,
       p_labs: params.lab || null,
       p_fluorescences: params.fluorescence || null,
-      p_sort: sort,
-      p_sort_dir: sortDir,
+      p_sort: params.sort || 'price_usd',
+      p_sort_dir: params.sort_dir || 'asc',
       p_limit: perPage,
       p_offset: offset
-    });
+    };
 
-    if (error) throw error;
+    const response = await fetch(
+      `${process.env.SUPABASE_URL}/rest/v1/rpc/search_diamonds`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': process.env.SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${process.env.SUPABASE_ANON_KEY}`
+        },
+        body: JSON.stringify(rpcParams)
+      }
+    );
 
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(errText);
+    }
+
+    const data = await response.json();
+
+    res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
     res.status(200).json({
       Diamonds: {
         data: data,
