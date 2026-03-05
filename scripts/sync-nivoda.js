@@ -13,6 +13,8 @@ const supabase = createClient(
 const BATCH_SIZE = 500;
 
 function mapRow(row, syncTimestamp) {
+  const length = parseFloat(row['length']) || null;
+  const width = parseFloat(row['width']) || null;
   return {
     nivoda_id: row['ID'],
     stock_id: row['stockId'],
@@ -28,8 +30,8 @@ function mapRow(row, syncTimestamp) {
     fluorescence: row['flo'] || null,
     fluorescence_color: row['floCol'] || null,
     lab: row['lab'],
-    length: parseFloat(row['length']) || null,
-    width: parseFloat(row['width']) || null,
+    length: length,
+    width: width,
     depth_mm: parseFloat(row['height']) || null,
     depth_percent: parseFloat(row['depth']) || null,
     table_percent: parseFloat(row['table']) || null,
@@ -54,6 +56,7 @@ function mapRow(row, syncTimestamp) {
     min_delivery_days: parseInt(row['minDeliveryDays']) || null,
     max_delivery_days: parseInt(row['maxDeliveryDays']) || null,
     availability: 'available',
+    ratio: (length && width && width > 0) ? Math.round((length / width) * 100) / 100 : null,
     updated_at: syncTimestamp
   };
 }
@@ -116,7 +119,6 @@ async function syncToDatabase(csvPath) {
   console.log(`Parsed ${records.length} valid lab-grown diamonds from CSV`);
 
   // Step 1: Upsert all current diamonds
-  // Zero downtime — old diamonds stay available while this runs
   let inserted = 0;
   let errors = 0;
   for (let i = 0; i < records.length; i += BATCH_SIZE) {
@@ -138,7 +140,6 @@ async function syncToDatabase(csvPath) {
   console.log(`Upsert complete: ${inserted}/${records.length} (${errors} batch errors)`);
 
   // Step 2: Mark stale diamonds as unavailable
-  // Anything still marked available but with updated_at before this sync wasn't in the file
   console.log('Marking stale diamonds as unavailable...');
   const { error: markError } = await supabase.rpc('mark_stale_unavailable', {
     sync_ts: syncTimestamp
@@ -149,16 +150,17 @@ async function syncToDatabase(csvPath) {
     console.log('Stale diamonds marked unavailable');
   }
 
-  // Step 3: Delete diamonds unavailable for 90+ days
-  console.log('Cleaning up old unavailable diamonds (90+ days)...');
-  const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-  const { error: deleteError } = await supabase.rpc('delete_old_unavailable', {
-    cutoff_date: cutoff
-  });
+  // Step 3: Delete all unavailable diamonds immediately
+  console.log('Deleting unavailable diamonds...');
+  const { error: deleteError, count } = await supabase
+    .from('diamonds')
+    .delete({ count: 'exact' })
+    .eq('availability', 'unavailable');
+
   if (deleteError) {
-    console.error('Cleanup error:', deleteError.message);
+    console.error('Delete error:', deleteError.message);
   } else {
-    console.log('Old unavailable diamonds cleaned up');
+    console.log(`Deleted ${count || 0} unavailable diamonds`);
   }
 
   console.log('Sync complete.');
