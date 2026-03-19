@@ -38,9 +38,15 @@ module.exports = async function handler(req, res) {
       return res.status(404).json({ error: 'Diamond not found or unavailable' });
     }
     const shopifyProduct = await createShopifyProduct(diamond, type);
+    const variantId = shopifyProduct.variants[0].id;
+
+    // Set shipping_days variant metafield: 5 for loose, 14 for ring
+    const shippingDays = type === 'Loose' ? (diamond.max_delivery_days || 5) : 10;
+    await setVariantMetafield(variantId, shippingDays);
+
     res.status(200).json({
       shopify_id: shopifyProduct.id,
-      variant_id: shopifyProduct.variants[0].id,
+      variant_id: variantId,
       title: shopifyProduct.title
     });
   } catch (err) {
@@ -77,10 +83,12 @@ async function createShopifyProduct(diamond, type) {
         vendor: 'Lab Diamond',
         tags: `lab-grown, ${diamond.shape}, ${diamond.color}, ${diamond.clarity}`,
         published: true,
+        template_suffix: 'diamond',
         variants: [{
           price: diamond.price_usd.toString(),
           sku: diamond.sku,
-          inventory_management: null,
+          inventory_management: 'shopify',
+          inventory_quantity: 1,
           requires_shipping: true
         }],
         images: diamond.image_url ? [{ src: diamond.image_url }] : []
@@ -90,4 +98,36 @@ async function createShopifyProduct(diamond, type) {
   const data = await response.json();
   if (!response.ok) throw new Error(`Shopify error: ${JSON.stringify(data)}`);
   return data.product;
+}
+
+async function setVariantMetafield(variantId, shippingDays) {
+  const { createClient } = require('@supabase/supabase-js');
+  const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_KEY
+  );
+  const shop = process.env.SHOPIFY_STORE;
+  const { data: tokenRow } = await supabase
+    .from('shopify_tokens')
+    .select('access_token')
+    .eq('shop', shop)
+    .single();
+  if (!tokenRow) return;
+
+  const url = `https://${shop}/admin/api/2024-01/variants/${variantId}/metafields.json`;
+  await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Shopify-Access-Token': tokenRow.access_token
+    },
+    body: JSON.stringify({
+      metafield: {
+        namespace: 'custom',
+        key: 'shipping_days',
+        value: shippingDays.toString(),
+        type: 'number_integer'
+      }
+    })
+  });
 }
