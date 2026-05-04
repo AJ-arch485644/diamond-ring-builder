@@ -86,6 +86,9 @@ async function createShopifyProduct(diamond, type) {
         template_suffix: 'diamond',
         variants: [{
           price: diamond.price_usd.toString(),
+          compare_at_price: Number(diamond.price_usd) > 0
+            ? (Number(diamond.price_usd) * 2).toFixed(2)
+            : null,
           sku: diamond.sku,
           inventory_management: 'shopify',
           inventory_quantity: 1,
