@@ -40,8 +40,10 @@ module.exports = async function handler(req, res) {
     const shopifyProduct = await createShopifyProduct(diamond, type);
     const variantId = shopifyProduct.variants[0].id;
 
-    // Set shipping_days variant metafield: 5 for loose, 14 for ring
-    const shippingDays = type === 'Loose' ? (diamond.max_delivery_days || 5) : 10;
+    // Use the diamond's actual fulfillment time for both Loose and Ring flows.
+    // Cart's MAX across line items ensures the slower of diamond/setting drives the date.
+    // Fallback 10 matches the setting default + diamond PDP fallback, so null-data diamonds promise consistently across surfaces.
+    const shippingDays = diamond.max_delivery_days || 10;
     await setVariantMetafield(variantId, shippingDays);
 
     res.status(200).json({
