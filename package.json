@@ -1,15 +1,16 @@
 {
   "name": "diamond-ring-builder",
   "version": "1.0.0",
-  "description": "Diamond inventory API powered by Nivoda FTP feed",
+  "description": "Diamond inventory API powered by Nivoda SFTP feed",
   "scripts": {
-    "sync": "node scripts/sync-nivoda.js"
+    "sync": "node scripts/sync-nivoda.js",
+    "test:sftp": "node scripts/test-sftp.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
-    "basic-ftp": "^5.0.4",
     "csv-parse": "^5.5.3",
     "dotenv": "^16.3.1",
-    "pg": "^8.19.0"
+    "pg": "^8.19.0",
+    "ssh2-sftp-client": "^10.0.3"
   }
 }

@@ -2,7 +2,7 @@ const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
 const { createClient } = require('@supabase/supabase-js');
 const { parse } = require('csv-parse');
-const ftp = require('basic-ftp');
+const SftpClient = require('ssh2-sftp-client');
 const fs = require('fs');
 
 const supabase = createClient(
@@ -142,21 +142,21 @@ async function applyReservations(supabase, reservedSkus) {
 }
 
 async function downloadCSV() {
-  const client = new ftp.Client();
-  client.ftp.verbose = false;
+  const sftp = new SftpClient();
   try {
-    await client.access({
+    await sftp.connect({
       host: process.env.NIVODA_FTP_HOST,
-      user: process.env.NIVODA_FTP_USER,
+      port: parseInt(process.env.NIVODA_FTP_PORT) || 22,
+      username: process.env.NIVODA_FTP_USER,
       password: process.env.NIVODA_FTP_PASS,
-      secure: false
+      readyTimeout: 30000
     });
     const localPath = path.join(require('os').tmpdir(), 'nivoda-diamonds.csv');
-    await client.downloadTo(localPath, process.env.NIVODA_FTP_PATH);
+    await sftp.fastGet(process.env.NIVODA_FTP_PATH, localPath);
     console.log(`Downloaded CSV to ${localPath}`);
     return localPath;
   } finally {
-    client.close();
+    await sftp.end();
   }
 }
 
