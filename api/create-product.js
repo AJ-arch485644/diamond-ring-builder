@@ -14,6 +14,24 @@ async function getShopifyToken(supabase, shop) {
   return cachedToken;
 }
 
+// Dedup: find an existing ACTIVE product variant for this diamond SKU so we reuse it
+// instead of minting a duplicate product on every call (the root cause of the 21% duplicate pile-up).
+async function findExistingVariantBySku(supabase, shop, sku) {
+  const token = await getShopifyToken(supabase, shop);
+  const query = `query($q:String!){ productVariants(first:1, query:$q){ edges { node { legacyResourceId product { legacyResourceId title status } } } } }`;
+  const r = await fetch(`https://${shop}/admin/api/2024-01/graphql.json`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
+    body: JSON.stringify({ query, variables: { q: 'sku:' + sku } })
+  });
+  const j = await r.json();
+  const edge = j && j.data && j.data.productVariants && j.data.productVariants.edges && j.data.productVariants.edges[0];
+  if (!edge) return null;
+  const n = edge.node;
+  if (n.product && n.product.status && n.product.status !== 'ACTIVE') return null; // skip archived/draft leftovers
+  return { variant_id: Number(n.legacyResourceId), shopify_id: Number(n.product.legacyResourceId), title: n.product.title };
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -37,6 +55,16 @@ module.exports = async function handler(req, res) {
     if (error || !diamond) {
       return res.status(404).json({ error: 'Diamond not found or unavailable' });
     }
+
+    // Idempotent by SKU: reuse an existing product if one was already created for this diamond.
+    // Prevents duplicate products from repeat add-to-cart, reloads during the pending window, or retries.
+    const shop = process.env.SHOPIFY_STORE;
+    const existing = await findExistingVariantBySku(supabase, shop, diamond.sku);
+    if (existing) {
+      await setVariantMetafield(existing.variant_id, diamond.max_delivery_days || 10);
+      return res.status(200).json({ shopify_id: existing.shopify_id, variant_id: existing.variant_id, title: existing.title, reused: true });
+    }
+
     const shopifyProduct = await createShopifyProduct(diamond, type);
     const variantId = shopifyProduct.variants[0].id;
 
