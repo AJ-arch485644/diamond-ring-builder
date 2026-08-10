@@ -1,0 +1,81 @@
+name: Nightly Image Audit
+
+# REPORT-ONLY catalog image QC. Writes to the image_audit table only — never to
+# diamonds, never to the storefront view. Flags go to the run summary and a
+# rolling "image-qc" issue for human review. Fully independent of sync.yml.
+on:
+  schedule:
+    # 04:20 UTC: starts right after the 04:00 sync finishes (~10 min) and the
+    # 200-min default budget ends before the 08:00 sync — minimal DB overlap.
+    - cron: '20 4 * * *'
+  workflow_dispatch:
+    inputs:
+      new_cap:
+        description: 'Max new/changed images to classify this run'
+        default: '25000'
+      sweep_cap:
+        description: 'Max ledger rows to ETag-check this run'
+        default: '60000'
+      time_budget_min:
+        description: 'Minutes before the job wraps up gracefully'
+        default: '200'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: image-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # Deliberately NOT in package.json (keeps sync.yml's npm install untouched)
+      # and pinned so a nightly run can't silently pick up a breaking release.
+      - run: npm install --no-save @supabase/supabase-js@2.112.2 sharp@0.35.3 onnxruntime-node@1.27.0
+      - name: Run audit
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          NEW_CAP: ${{ inputs.new_cap || '25000' }}
+          SWEEP_CAP: ${{ inputs.sweep_cap || '60000' }}
+          TIME_BUDGET_MIN: ${{ inputs.time_budget_min || '200' }}
+        run: node image-audit/audit.js
+      - name: Update flag-review issue
+        if: always()
+        continue-on-error: true   # reporting hiccups must never fail the audit run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FLAGS=image-audit/new-flags.json
+          if [ ! -s "$FLAGS" ] || [ "$(jq length $FLAGS)" = "0" ]; then
+            echo "No new flags."; exit 0
+          fi
+          N=$(jq length $FLAGS)
+          {
+            echo "$N new flag(s) from the $(date -u +%F) audit. Review the images; wrong-shape confirms go to the theme blocklist (assets/bad-image-skus.json). Full list in the run artifacts/summary."
+            echo ""
+            jq -r '.[:50][] | "- `\(.sku)` cert **\(.fam)** → looks **\(.pred)** (\((.conf*100)|round)%, \(.source)) — [image](\(.image_url))"' "$FLAGS"
+          } > /tmp/issue-body.md
+          gh label create image-qc --force --color D93F0B --description "Catalog image QC flags" || true
+          EXISTING=$(gh issue list --label image-qc --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body-file /tmp/issue-body.md
+          else
+            gh issue create --title "Image QC: flags awaiting review" --label image-qc --body-file /tmp/issue-body.md
+          fi
+      - name: Upload flags artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: new-flags
+          path: image-audit/new-flags.json
+          if-no-files-found: ignore
+          retention-days: 30
