@@ -150,19 +150,37 @@ async function buildPool(ownerDenied) {
   return { combos, stones };
 }
 
-async function seedIfEmpty() {
-  const { count, error } = await supabase.from('select_audit').select('sku', { count: 'exact', head: true });
-  if (error) throw new Error('select_audit count: ' + error.message);
-  if (count > 0) return;
-  const fleet = JSON.parse(fs.readFileSync(path.join(__dirname, 'select-fleet-certified.json'), 'utf8'));
-  const denied = JSON.parse(fs.readFileSync(path.join(__dirname, 'select-owner-denied.json'), 'utf8'));
-  console.log('[seed] fleet-certified', fleet.length, '+ owner-denied', denied.length);
-  const rows = fleet.map(sku => ({ sku, cut_pass: true, shape_ok: true, source: 'fleet' }))
-    .concat(denied.map(sku => ({ sku, cut_pass: false, shape_ok: null, source: 'owner' })));
-  for (let i = 0; i < rows.length; i += 500) {
-    const { error: e } = await supabase.from('select_audit').upsert(rows.slice(i, i + 500), { onConflict: 'sku' });
-    if (e) console.error('[seed] ' + e.message);
+async function seedFleetLists() {
+  // Idempotent every run: ON CONFLICT DO NOTHING fills gaps without ever
+  // overwriting CNN or owner rows. Fleet judgment (certifications AND denials)
+  // permanently stands; the CNN only rules on stones no judge has seen.
+  const files = [
+    ['select-fleet-certified.json', sku => ({ sku, cut_pass: true, shape_ok: true, source: 'fleet' })],
+    ['select-fleet-denied.json', sku => ({ sku, cut_pass: false, shape_ok: null, source: 'fleet-denied' })],
+    ['select-owner-denied.json', sku => ({ sku, cut_pass: false, shape_ok: null, source: 'owner' })]
+  ];
+  for (const [file, toRow] of files) {
+    const p = path.join(__dirname, file);
+    if (!fs.existsSync(p)) continue;
+    const rows = JSON.parse(fs.readFileSync(p, 'utf8')).map(toRow);
+    for (let i = 0; i < rows.length; i += 500) {
+      const { error: e } = await supabase.from('select_audit')
+        .upsert(rows.slice(i, i + 500), { onConflict: 'sku', ignoreDuplicates: true });
+      if (e) console.error('[seed] ' + e.message);
+    }
+    // Denials additionally OVERRIDE any existing CNN verdict: a judge (fleet or
+    // owner) outranks the model, even when the model scored the stone first.
+    if (!rows[0].cut_pass) {
+      const skus = rows.map(r => r.sku);
+      for (let i = 0; i < skus.length; i += 500) {
+        const { error: e } = await supabase.from('select_audit')
+          .update({ cut_pass: false, source: rows[0].source })
+          .in('sku', skus.slice(i, i + 500)).eq('source', 'cnn');
+        if (e) console.error('[seed-override] ' + e.message);
+      }
+    }
   }
+  console.log('[seed] fleet lists reconciled');
 }
 
 async function shopifyToken() {
@@ -183,7 +201,7 @@ async function main() {
   await loadModels();
   console.log('[models] loaded, cut threshold', THRESHOLD);
   const ownerDenied = new Set(JSON.parse(fs.readFileSync(path.join(__dirname, 'select-owner-denied.json'), 'utf8')));
-  await seedIfEmpty();
+  await seedFleetLists();
 
   const { combos, stones } = await buildPool(ownerDenied);
   const allSkus = Object.keys(stones);
