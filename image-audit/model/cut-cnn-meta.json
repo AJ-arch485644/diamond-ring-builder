@@ -1,0 +1,11 @@
+{
+ "threshold": 0.8550000000000004,
+ "val_auc": 0.7984700869608552,
+ "val_precision": 0.9723756906077348,
+ "val_recall": 0.5876460767946577,
+ "output": "sigmoid(logit) = probability certifiable",
+ "trained": "2026-08-11",
+ "variant": "v2-clean-labels",
+ "train_n": 4884,
+ "val_n": 666
+}
