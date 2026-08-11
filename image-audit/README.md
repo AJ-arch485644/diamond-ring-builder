@@ -45,6 +45,23 @@ confirmed bad image. Confirmed SKUs go into the theme's
 `assets/bad-image-skus.json` (both themes), which the configurator already
 enforces fail-open.
 
+## Diyona Select refresh (`select-refresh.js`)
+
+Runs after the audit in the same workflow. Rebuilds the Select candidate pool
+nightly (every shape/carat/color/clarity combo, engine gates, 7% price band),
+scores candidates the `select_audit` ledger hasn't seen — shape CNN must agree
+with the cert AND the cut-quality CNN (`model/cut-cnn.onnx`, trained on the
+2026-08-10 certification fleet's 6.7k graded images + owner calibration) must
+clear its precision-tuned threshold — then publishes the whitelist as
+`assets/select-certified.json` to both themes.
+
+Safety rails: `select-owner-denied.json` is a permanent veto the CNN can never
+override; publishing HOLDS for human review if the whitelist would shrink >30%
+or grow >50% in one night; stones that leave inventory need no action (the
+storefront engine only badges rendered stones). First run seeds the ledger from
+`select-fleet-certified.json` (the human-verified fleet certification). If the
+cut model file is absent the step no-ops.
+
 ## Someday, deliberately (not now)
 
 Auto-enforcement would mean exposing the flag through `public_diamonds` and

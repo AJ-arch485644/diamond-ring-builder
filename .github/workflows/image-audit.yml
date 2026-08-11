@@ -48,6 +48,15 @@ jobs:
           SWEEP_CAP: ${{ inputs.sweep_cap || '60000' }}
           TIME_BUDGET_MIN: ${{ inputs.time_budget_min || '200' }}
         run: node image-audit/audit.js
+      - name: Select refresh
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
+          SHOPIFY_CLIENT_ID: ${{ secrets.SHOPIFY_CLIENT_ID }}
+          SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}
+        run: node image-audit/select-refresh.js
       - name: Update flag-review issue
         if: always()
         continue-on-error: true   # reporting hiccups must never fail the audit run
