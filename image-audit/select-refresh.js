@@ -183,6 +183,103 @@ async function seedFleetLists() {
   console.log('[seed] fleet lists reconciled');
 }
 
+// Shared scorer: download -> preprocess -> shape veto + cut threshold -> ledger.
+// Only ever writes skus absent from the ledger, so judge rows (fleet/owner) are
+// untouchable. minLeft = minutes of budget this phase must leave for later ones.
+async function scoreList(items, ledger, tag, minLeft) {
+  let scored = 0, passed = 0, dlFail = 0;
+  for (let i = 0; i < items.length && timeLeft() > minLeft * 60000; i += 24) {
+    const slice = items.slice(i, i + 24);
+    const fetched = [];
+    for (const it of slice) {
+      try {
+        const { buf, etag } = await download(it.url);
+        fetched.push({ sku: it.sku, fam: it.fam, x: await preprocess(buf), etag });
+      } catch (e) { dlFail++; }
+    }
+    const results = await scoreBatch(fetched);
+    const rows = results.map((r, j) => {
+      const shapeOk = r.shapePred === r.fam;
+      const pass = shapeOk && r.cutProb >= THRESHOLD;
+      if (pass) passed++;
+      return { sku: r.sku, fam: r.fam, cut_score: Math.round(r.cutProb * 1000) / 1000,
+        cut_pass: pass, shape_ok: shapeOk, source: 'cnn', etag: fetched[j].etag,
+        scored_at: new Date().toISOString() };
+    });
+    for (let k = 0; k < rows.length; k += 500) {
+      const { error } = await supabase.from('select_audit').upsert(rows.slice(k, k + 500), { onConflict: 'sku' });
+      if (error) console.error(tag + ' ' + error.message);
+    }
+    scored += rows.length;
+    rows.forEach(r => ledger.set(r.sku, r));
+    if (scored % 480 === 0) console.log(tag, scored, '/', items.length, '| passed', passed);
+  }
+  return { scored, passed, dlFail };
+}
+
+// The backfill enumeration collapses the three cushion variants into one sweep
+// (their ratio windows nest) so shared stones are not re-paginated three times.
+function backfillShapes() {
+  const out = {};
+  for (const [k, cfg] of Object.entries(SHAPES)) {
+    if (k.includes('cushion')) continue;
+    out[k] = cfg;
+  }
+  out['cushion'] = { db: SHAPES['cushion'].db, ratio: [0.98, 1.50], gate: SHAPES['cushion'].gate };
+  return out;
+}
+
+async function backfillUniverse(ledger, ownerDenied, report) {
+  const CAP = parseInt(process.env.BACKFILL_CAP || '15000', 10);
+  if (!CAP) { console.log('[backfill] disabled'); return; }
+  let scored = 0, passed = 0, dlFail = 0, walked = 0;
+  for (const [variant, cfg] of Object.entries(backfillShapes())) {
+    if (scored >= CAP || timeLeft() < 6 * 60000) break;
+    let last = '';
+    while (scored < CAP && timeLeft() > 6 * 60000) {
+      let q = supabase.from('diamonds')
+        .select('sku,shape,image_url')
+        .eq('availability', 'available').eq('is_lab_grown', true)
+        .in('shape', cfg.db).eq('lab', 'IGI').eq('polish', 'EX').eq('symmetry', 'EX')
+        .in('color', COLORS).in('clarity', CLARITIES)
+        .gte('ratio', cfg.ratio[0]).lte('ratio', cfg.ratio[1])
+        .gte('table_percent', cfg.gate.table[0]).lte('table_percent', cfg.gate.table[1])
+        .gte('depth_percent', cfg.gate.depth[0]).lte('depth_percent', cfg.gate.depth[1])
+        .not('image_url', 'is', null)
+        .order('sku', { ascending: true }).limit(1000);
+      if (cfg.cuts) q = q.in('cut', cfg.cuts);
+      if (last) q = q.gt('sku', last);
+      const { data, error } = await q;
+      if (error) { console.error('[backfill] ' + error.message); break; }
+      if (!data || !data.length) break;
+      last = data[data.length - 1].sku;
+      walked += data.length;
+      const fresh = [];
+      for (let i = 0; i < data.length; i += 500) {
+        const batch = data.slice(i, i + 500);
+        const skus = batch.map(r => r.sku);
+        const { data: hits } = await supabase.from('select_audit').select('sku').in('sku', skus);
+        const known = new Set((hits || []).map(h => h.sku));
+        batch.forEach(r => {
+          if (known.has(r.sku) || ownerDenied.has(r.sku)) return;
+          const url = String(r.image_url || '').trim();
+          if (url) fresh.push({ sku: r.sku, fam: FAM(r.shape), url });
+        });
+      }
+      if (fresh.length) {
+        const room = CAP - scored;
+        const s = await scoreList(fresh.slice(0, room), ledger, '[backfill]', 5);
+        scored += s.scored; passed += s.passed; dlFail += s.dlFail;
+      }
+      if (data.length < 1000) break;
+    }
+    console.log('[backfill]', variant, 'done | total scored', scored, '| passed', passed);
+  }
+  report.backfillWalked = walked; report.backfillScored = scored;
+  report.backfillPassed = passed; report.backfillDlFail = dlFail;
+  console.log('[backfill] done:', scored, 'scored |', passed, 'passed |', walked, 'rows walked');
+}
+
 async function shopifyToken() {
   const r = await fetch('https://' + process.env.SHOPIFY_STORE + '/admin/oauth/access_token', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -220,36 +317,16 @@ async function main() {
   report.toScore = toScore.length;
   console.log('[score] new candidates to score:', toScore.length, 'of', allSkus.length);
 
-  // score new candidates: shape veto + cut threshold
-  let scored = 0, passed = 0, dlFail = 0;
-  for (let i = 0; i < toScore.length && timeLeft() > 8 * 60000; i += 24) {
-    const slice = toScore.slice(i, i + 24);
-    const fetched = [];
-    for (const sku of slice) {
-      try {
-        const { buf, etag } = await download(stones[sku].url);
-        fetched.push({ sku, fam: stones[sku].fam, x: await preprocess(buf), etag });
-      } catch (e) { dlFail++; }
-    }
-    const results = await scoreBatch(fetched);
-    const rows = results.map((r, j) => {
-      const shapeOk = r.shapePred === r.fam;
-      const pass = shapeOk && r.cutProb >= THRESHOLD;
-      if (pass) passed++;
-      return { sku: r.sku, fam: r.fam, cut_score: Math.round(r.cutProb * 1000) / 1000,
-        cut_pass: pass, shape_ok: shapeOk, source: 'cnn', etag: fetched[j].etag,
-        scored_at: new Date().toISOString() };
-    });
-    for (let k = 0; k < rows.length; k += 500) {
-      const { error } = await supabase.from('select_audit').upsert(rows.slice(k, k + 500), { onConflict: 'sku' });
-      if (error) console.error('[score] ' + error.message);
-    }
-    scored += rows.length;
-    rows.forEach(r => ledger.set(r.sku, r));
-    if (scored % 96 === 0) console.log('[score]', scored, '/', toScore.length, '| passed', passed);
-  }
-  report.scored = scored; report.newPassed = passed; report.dlFail = dlFail;
-  console.log('[score] done:', scored, 'scored |', passed, 'passed |', dlFail, 'dl failures');
+  // score new candidates: shape veto + cut threshold (priority lane)
+  const s1 = await scoreList(toScore.map(sku => ({ sku, fam: stones[sku].fam, url: stones[sku].url })),
+    ledger, '[score]', 8);
+  report.scored = s1.scored; report.newPassed = s1.passed; report.dlFail = s1.dlFail;
+  console.log('[score] done:', s1.scored, 'scored |', s1.passed, 'passed |', s1.dlFail, 'dl failures');
+
+  // Catalog-wide backfill: pre-certify the WHOLE gated-eligible universe (every
+  // stone that could ever appear in a Select search, regardless of today's
+  // price floors) so the bench is always scored before price drift needs it.
+  await backfillUniverse(ledger, ownerDenied, report);
 
   // assemble whitelist: every current candidate whose ledger row passes
   const whitelist = new Set();
