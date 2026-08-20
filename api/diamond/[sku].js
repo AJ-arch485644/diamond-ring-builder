@@ -1,12 +1,34 @@
-const { Pool } = require('pg');
+// Data access via Supabase REST (service key) — the raw-Postgres DATABASE_URL
+// credential went stale and was 500ing every SEO page and sub-sitemap.
+const { createClient } = require('@supabase/supabase-js');
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-  max: 3,
-  connectionTimeoutMillis: 5000,
-  idleTimeoutMillis: 10000
-});
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
+
+// PostgREST caps rows per request (project max-rows setting, ~10k), so large
+// reads must page in chunks.
+async function fetchChunked(columns, orderCol, ascending, limit, offset) {
+  const CHUNK = 10000;
+  let rows = [];
+  let pos = offset;
+  while (rows.length < limit) {
+    const want = Math.min(CHUNK, limit - rows.length);
+    const { data, error } = await supabase
+      .from('diamonds')
+      .select(columns)
+      .eq('availability', 'available')
+      .eq('is_lab_grown', true)
+      .order(orderCol, { ascending })
+      .range(pos, pos + want - 1);
+    if (error) throw new Error(error.message);
+    rows = rows.concat(data || []);
+    if (!data || data.length < want) break;
+    pos += want;
+  }
+  return rows;
+}
 
 function esc(str) {
   if (str == null) return '';
@@ -411,11 +433,9 @@ module.exports = async function handler(req, res) {
       const perPage = 25000;
       const offset = (page - 1) * perPage;
       // Lightweight query — only fetch what we need for the URL
-      const { rows } = await pool.query(
-        `SELECT sku, shape, carat, color, clarity, lab, certificate_number
-         FROM diamonds WHERE availability = 'available' AND is_lab_grown = true
-         ORDER BY sku ASC LIMIT $1 OFFSET $2`,
-        [perPage, offset]
+      const rows = await fetchChunked(
+        'sku, shape, carat, color, clarity, lab, certificate_number',
+        'sku', true, perPage, offset
       );
       if (rows.length === 0) {
         // Empty page — return empty sitemap
@@ -452,18 +472,20 @@ module.exports = async function handler(req, res) {
 
   try {
     // Try the full value first (plain SKU), then the extracted slug SKU
-    let { rows } = await pool.query(
-      `SELECT sku, shape, carat, color, clarity, cut, polish, symmetry,
+    const DETAIL_COLS = `sku, shape, carat, color, clarity, cut, polish, symmetry,
               fluorescence, lab, price_usd, length, width,
               depth_mm, depth_percent, table_percent,
-              image_url, video_url, certificate_url, certificate_number
-       FROM diamonds
-       WHERE sku = $1 OR sku = $2
-       LIMIT 1`,
-      [sku, possibleSku]
-    );
+              image_url, video_url, certificate_url, certificate_number`;
+    let { data: rows, error } = await supabase
+      .from('diamonds').select(DETAIL_COLS).eq('sku', sku).limit(1);
+    if (error) throw new Error(error.message);
+    if ((!rows || !rows.length) && possibleSku !== sku) {
+      ({ data: rows, error } = await supabase
+        .from('diamonds').select(DETAIL_COLS).eq('sku', possibleSku).limit(1));
+      if (error) throw new Error(error.message);
+    }
 
-    if (!rows.length) {
+    if (!rows || !rows.length) {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
       return res.status(404).send(build404());

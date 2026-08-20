@@ -1,12 +1,31 @@
-const { Pool } = require('pg');
+// Data access via Supabase REST (service key) — the raw-Postgres DATABASE_URL
+// credential went stale and was 500ing this sitemap.
+const { createClient } = require('@supabase/supabase-js');
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-  max: 3,
-  connectionTimeoutMillis: 5000,
-  idleTimeoutMillis: 10000
-});
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
+
+// PostgREST caps rows per request (project max-rows setting, ~10k) — page in chunks.
+async function fetchAll(limit) {
+  const CHUNK = 10000;
+  let rows = [];
+  while (rows.length < limit) {
+    const want = Math.min(CHUNK, limit - rows.length);
+    const { data, error } = await supabase
+      .from('diamonds')
+      .select('sku, shape, carat, color, clarity, lab, certificate_number, updated_at')
+      .eq('availability', 'available')
+      .eq('is_lab_grown', true)
+      .order('price_usd', { ascending: false })
+      .range(rows.length, rows.length + want - 1);
+    if (error) throw new Error(error.message);
+    rows = rows.concat(data || []);
+    if (!data || data.length < want) break;
+  }
+  return rows;
+}
 
 function esc(str) {
   if (str == null) return '';
@@ -20,13 +39,7 @@ function esc(str) {
 
 module.exports = async function handler(req, res) {
   try {
-    const { rows } = await pool.query(
-      `SELECT sku, shape, carat, color, clarity, lab, certificate_number, updated_at
-       FROM diamonds
-       WHERE availability = 'available' AND is_lab_grown = true
-       ORDER BY price_usd DESC
-       LIMIT 50000`
-    );
+    const rows = await fetchAll(50000);
 
     const urls = rows.map(row => {
       const lastmod = row.updated_at

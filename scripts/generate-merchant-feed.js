@@ -42,6 +42,8 @@ const COLUMNS = [
 
 function normalizeCut(raw) {
   if (!raw) return '';
+  // Fancy shapes carry placeholder cut values like "-" or "N/A" in the feed
+  if (/^[-–—\s]*$/.test(raw) || ['N/A', 'NA', 'NONE'].includes(raw.toUpperCase().trim())) return '';
   const map = {
     EX: 'Excellent', EXC: 'Excellent', ID: 'Ideal', IDL: 'Ideal',
     VG: 'Very Good', G: 'Good', GD: 'Good', F: 'Fair', FR: 'Fair',

@@ -1,0 +1,27 @@
+name: OpenAI Product Feed
+
+on:
+  schedule:
+    # Every 6 hours, offset 3h from the Google Merchant feed
+    - cron: '0 3/6 * * *'
+  workflow_dispatch: # Manual trigger
+
+jobs:
+  generate-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install @supabase/supabase-js
+
+      - name: Generate and upload feed
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node scripts/generate-openai-feed.js
