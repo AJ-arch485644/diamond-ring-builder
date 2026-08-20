@@ -266,7 +266,7 @@ function buildPage(d) {
     // Redirect real users to the ring builder — bots/crawlers don't execute JS so they see the SEO page
     (function(){
       var ua = navigator.userAgent.toLowerCase();
-      var isBot = /googlebot|bingbot|yandex|baiduspider|facebookexternalhit|twitterbot|rogerbot|linkedinbot|embedly|showyoubot|outbrain|pinterest|slackbot|vkshare|w3c_validator|semrush|ahrefs|mj12bot|dotbot/i.test(ua);
+      var isBot = /googlebot|bingbot|yandex|baiduspider|facebookexternalhit|twitterbot|rogerbot|linkedinbot|embedly|showyoubot|outbrain|pinterest|slackbot|vkshare|w3c_validator|semrush|ahrefs|mj12bot|dotbot|oai-searchbot|gptbot|chatgpt-user|perplexitybot|perplexity-user|claudebot|claude-web|anthropic-ai|amazonbot|applebot|duckduckbot|meta-externalagent|bytespider/i.test(ua);
       if (!isBot) {
         window.location.replace('https://diyona.com/pages/diamond-detail?sku=' + encodeURIComponent('${esc(d.sku)}') + '&ring_builder=true');
       }
