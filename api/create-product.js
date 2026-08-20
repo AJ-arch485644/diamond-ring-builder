@@ -83,7 +83,6 @@ module.exports = async function handler(req, res) {
     await setVariantMetafield(variantId, shippingDays);
 
     // HS code enables Shopify duties/import-tax calculation at checkout for intl orders.
-    // Country of origin left unset -> falls back to ship-from (US).
     await setInventoryHSCode(shopifyProduct.variants[0].inventory_item_id, hsCode);
 
     res.status(200).json({
@@ -170,7 +169,8 @@ async function setInventoryHSCode(inventoryItemId, hsCode) {
     body: JSON.stringify({
       inventory_item: {
         id: inventoryItemId,
-        harmonized_system_code: hsCode
+        harmonized_system_code: hsCode,
+        country_code_of_origin: 'IN'
       }
     })
   });
