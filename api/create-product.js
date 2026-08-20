@@ -74,6 +74,10 @@ module.exports = async function handler(req, res) {
     const shippingDays = diamond.max_delivery_days || 10;
     await setVariantMetafield(variantId, shippingDays);
 
+    // HS code enables Shopify duties/import-tax calculation at checkout for intl orders.
+    // 7104.91 = worked lab-grown diamond. Country of origin left unset -> falls back to ship-from (US).
+    await setInventoryHSCode(shopifyProduct.variants[0].inventory_item_id);
+
     res.status(200).json({
       shopify_id: shopifyProduct.id,
       variant_id: variantId,
@@ -131,6 +135,37 @@ async function createShopifyProduct(diamond, type) {
   const data = await response.json();
   if (!response.ok) throw new Error(`Shopify error: ${JSON.stringify(data)}`);
   return data.product;
+}
+
+async function setInventoryHSCode(inventoryItemId) {
+  if (!inventoryItemId) return;
+  const { createClient } = require('@supabase/supabase-js');
+  const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_KEY
+  );
+  const shop = process.env.SHOPIFY_STORE;
+  const { data: tokenRow } = await supabase
+    .from('shopify_tokens')
+    .select('access_token')
+    .eq('shop', shop)
+    .single();
+  if (!tokenRow) return;
+
+  const url = `https://${shop}/admin/api/2024-01/inventory_items/${inventoryItemId}.json`;
+  await fetch(url, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Shopify-Access-Token': tokenRow.access_token
+    },
+    body: JSON.stringify({
+      inventory_item: {
+        id: inventoryItemId,
+        harmonized_system_code: '7104.91'
+      }
+    })
+  });
 }
 
 async function setVariantMetafield(variantId, shippingDays) {

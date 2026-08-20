@@ -48,7 +48,7 @@ module.exports = async function handler(req, res) {
 
         const sql = `
           SELECT sku,shape,carat,color,clarity,cut,polish,symmetry,
-                 fluorescence,lab,price_usd,cost_usd,length,width,
+                 fluorescence,lab,price_usd,length,width,
                  depth_mm,depth_percent,table_percent,
                  image_url,video_url,certificate_url,certificate_number
           FROM diamonds
@@ -86,7 +86,7 @@ module.exports = async function handler(req, res) {
 
       const sql = `
         SELECT sku,shape,carat,color,clarity,cut,polish,symmetry,
-               fluorescence,lab,price_usd,cost_usd,length,width,
+               fluorescence,lab,price_usd,length,width,
                depth_mm,depth_percent,table_percent,
                image_url,video_url,certificate_url,certificate_number
         FROM diamonds
