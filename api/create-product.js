@@ -18,7 +18,7 @@ async function getShopifyToken(supabase, shop) {
 // instead of minting a duplicate product on every call (the root cause of the 21% duplicate pile-up).
 async function findExistingVariantBySku(supabase, shop, sku) {
   const token = await getShopifyToken(supabase, shop);
-  const query = `query($q:String!){ productVariants(first:1, query:$q){ edges { node { legacyResourceId product { legacyResourceId title status } } } } }`;
+  const query = `query($q:String!){ productVariants(first:1, query:$q){ edges { node { legacyResourceId inventoryItem { legacyResourceId } product { legacyResourceId title status } } } } }`;
   const r = await fetch(`https://${shop}/admin/api/2024-01/graphql.json`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
@@ -29,7 +29,7 @@ async function findExistingVariantBySku(supabase, shop, sku) {
   if (!edge) return null;
   const n = edge.node;
   if (n.product && n.product.status && n.product.status !== 'ACTIVE') return null; // skip archived/draft leftovers
-  return { variant_id: Number(n.legacyResourceId), shopify_id: Number(n.product.legacyResourceId), title: n.product.title };
+  return { variant_id: Number(n.legacyResourceId), shopify_id: Number(n.product.legacyResourceId), title: n.product.title, inventory_item_id: n.inventoryItem ? Number(n.inventoryItem.legacyResourceId) : null };
 }
 
 module.exports = async function handler(req, res) {
@@ -45,6 +45,11 @@ module.exports = async function handler(req, res) {
   const sku = req.query.sku || req.body?.sku;
   const type = req.query.type || req.body?.type || 'Ring';
   if (!sku) return res.status(400).json({ error: 'SKU required' });
+  // HS code follows purchase intent: bought loose -> loose lab diamond (7104.91);
+  // bought with a setting -> ships as a finished engagement ring, so the diamond
+  // line is classified as jewelry (7113.19) and duties total up on the whole ring.
+  // This runs before add-to-cart, so checkout duty calculation sees the right code.
+  const hsCode = type === 'Loose' ? '7104.91' : '7113.19';
   try {
     const { data: diamond, error } = await supabase
       .from('diamonds')
@@ -62,6 +67,9 @@ module.exports = async function handler(req, res) {
     const existing = await findExistingVariantBySku(supabase, shop, diamond.sku);
     if (existing) {
       await setVariantMetafield(existing.variant_id, diamond.max_delivery_days || 10);
+      // Restamp on reuse: the same diamond may have been touched by the other flow
+      // (or by the one-time 7104.91 catalog backfill) — the latest purchase intent wins.
+      await setInventoryHSCode(existing.inventory_item_id, hsCode);
       return res.status(200).json({ shopify_id: existing.shopify_id, variant_id: existing.variant_id, title: existing.title, reused: true });
     }
 
@@ -75,8 +83,8 @@ module.exports = async function handler(req, res) {
     await setVariantMetafield(variantId, shippingDays);
 
     // HS code enables Shopify duties/import-tax calculation at checkout for intl orders.
-    // 7104.91 = worked lab-grown diamond. Country of origin left unset -> falls back to ship-from (US).
-    await setInventoryHSCode(shopifyProduct.variants[0].inventory_item_id);
+    // Country of origin left unset -> falls back to ship-from (US).
+    await setInventoryHSCode(shopifyProduct.variants[0].inventory_item_id, hsCode);
 
     res.status(200).json({
       shopify_id: shopifyProduct.id,
@@ -137,8 +145,8 @@ async function createShopifyProduct(diamond, type) {
   return data.product;
 }
 
-async function setInventoryHSCode(inventoryItemId) {
-  if (!inventoryItemId) return;
+async function setInventoryHSCode(inventoryItemId, hsCode) {
+  if (!inventoryItemId || !hsCode) return;
   const { createClient } = require('@supabase/supabase-js');
   const supabase = createClient(
     process.env.SUPABASE_URL,
@@ -162,7 +170,7 @@ async function setInventoryHSCode(inventoryItemId) {
     body: JSON.stringify({
       inventory_item: {
         id: inventoryItemId,
-        harmonized_system_code: '7104.91'
+        harmonized_system_code: hsCode
       }
     })
   });
