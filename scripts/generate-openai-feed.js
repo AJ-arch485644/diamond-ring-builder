@@ -1,8 +1,9 @@
 /**
  * OpenAI (ChatGPT shopping / ACP) Product Feed Generator
  * Pulls diamond inventory from Supabase and generates a gzipped TSV feed per
- * https://developers.openai.com/commerce/specs/feed, then uploads it to the
- * public Supabase Storage bucket `feeds`.
+ * https://developers.openai.com/commerce/specs/feed. The workflow publishes it
+ * to the rolling `feeds` GitHub Release (the ~80MB artifact exceeds Supabase
+ * Storage's per-file cap).
  *
  * Sibling of generate-merchant-feed.js — same fetch loop and copy builders,
  * but links point at the server-rendered /a/lab-diamonds/ SEO pages (crawlable
@@ -11,10 +12,8 @@
  * Required env vars:
  *   SUPABASE_URL
  *   SUPABASE_ANON_KEY
- *   SUPABASE_SERVICE_KEY   (upload; skipped with a warning if absent)
  * Optional:
- *   LIMIT        cap fetched rows (testing)
- *   SKIP_UPLOAD  write local file only
+ *   LIMIT   cap fetched rows (testing)
  */
 
 const { createClient } = require('@supabase/supabase-js');
@@ -26,7 +25,6 @@ const zlib = require('zlib');
 const SITE_URL = 'https://diyona.com';
 const BRAND = 'Diyona';
 const FEED_FILENAME = 'diyona-diamonds-openai.tsv.gz';
-const STORAGE_BUCKET = 'feeds';
 const BATCH_SIZE = 10000;
 
 // ─── OpenAI feed columns (spec: developers.openai.com/commerce) ───
@@ -163,31 +161,6 @@ async function fetchWithRetry(supabase, offset, batchSize, retries = 3) {
   }
 }
 
-// ─── Upload to Supabase Storage (public bucket) ───────────────────
-async function uploadFeed(gzBuffer) {
-  const serviceKey = process.env.SUPABASE_SERVICE_KEY;
-  if (!serviceKey || process.env.SKIP_UPLOAD) {
-    console.warn('SUPABASE_SERVICE_KEY missing or SKIP_UPLOAD set — feed not uploaded.');
-    return;
-  }
-  const url = `${process.env.SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${FEED_FILENAME}`;
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${serviceKey}`,
-      'apikey': serviceKey,
-      'Content-Type': 'application/gzip',
-      'x-upsert': 'true',
-    },
-    body: gzBuffer,
-  });
-  if (!resp.ok) {
-    const body = await resp.text();
-    throw new Error(`Storage upload failed (${resp.status}): ${body.slice(0, 300)}`);
-  }
-  console.log(`Uploaded to ${process.env.SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${FEED_FILENAME}`);
-}
-
 // ─── Main ─────────────────────────────────────────────────────────
 async function main() {
   const supabase = createClient(
@@ -228,19 +201,37 @@ async function main() {
   const skipped = allDiamonds.length - rows.length;
   console.log(`Valid feed rows: ${rows.length} (skipped ${skipped} without price or image)`);
 
-  const header = COLUMNS.join('\t');
-  const lines = rows.map(row => COLUMNS.map(col => escTsv(row[col])).join('\t'));
-  const tsv = [header, ...lines].join('\n');
-  const gz = zlib.gzipSync(Buffer.from(tsv, 'utf-8'), { level: 9 });
-
   const outDir = path.join(__dirname, '..', 'output');
   if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
   const outPath = path.join(outDir, FEED_FILENAME);
-  fs.writeFileSync(outPath, gz);
 
-  console.log(`Feed written to ${outPath} (${(tsv.length / 1024 / 1024).toFixed(1)} MB raw, ${(gz.length / 1024 / 1024).toFixed(1)} MB gzipped, ${rows.length} products)`);
+  // Stream through gzip — the full TSV (~500MB) exceeds V8's max string length
+  let rawBytes = 0;
+  await new Promise((resolve, reject) => {
+    const gzip = zlib.createGzip({ level: 9 });
+    const out = fs.createWriteStream(outPath);
+    gzip.on('error', reject);
+    out.on('error', reject);
+    out.on('finish', resolve);
+    gzip.pipe(out);
 
-  await uploadFeed(gz);
+    const writeLine = (line) => {
+      rawBytes += Buffer.byteLength(line);
+      return gzip.write(line);
+    };
+
+    (async () => {
+      writeLine(COLUMNS.join('\t') + '\n');
+      for (const row of rows) {
+        const ok = writeLine(COLUMNS.map(col => escTsv(row[col])).join('\t') + '\n');
+        if (!ok) await new Promise(r => gzip.once('drain', r));
+      }
+      gzip.end();
+    })().catch(reject);
+  });
+
+  const gzBytes = fs.statSync(outPath).size;
+  console.log(`Feed written to ${outPath} (${(rawBytes / 1024 / 1024).toFixed(1)} MB raw, ${(gzBytes / 1024 / 1024).toFixed(1)} MB gzipped, ${rows.length} products)`);
 }
 
 main().catch(err => {
