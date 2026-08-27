@@ -84,8 +84,31 @@ function buildPage(d) {
       "price": d.price_usd || 0,
       "priceCurrency": "USD",
       "availability": "https://schema.org/InStock",
+      "itemCondition": "https://schema.org/NewCondition",
+      "priceValidUntil": new Date(Date.now() + 30 * 86400 * 1000).toISOString().split('T')[0],
       "url": canonical,
-      "seller": { "@type": "Organization", "name": "Diyona" }
+      "seller": { "@type": "Organization", "name": "Diyona" },
+      // Values must stay consistent with the storefront policy pages and GMC
+      // account settings: free insured shipping, 30-day postage-paid returns,
+      // loose diamonds ship within 1-4 business days
+      "hasMerchantReturnPolicy": {
+        "@type": "MerchantReturnPolicy",
+        "applicableCountry": "US",
+        "returnPolicyCategory": "https://schema.org/MerchantReturnFiniteReturnWindow",
+        "merchantReturnDays": 30,
+        "returnMethod": "https://schema.org/ReturnByMail",
+        "returnFees": "https://schema.org/FreeReturn"
+      },
+      "shippingDetails": {
+        "@type": "OfferShippingDetails",
+        "shippingRate": { "@type": "MonetaryAmount", "value": 0, "currency": "USD" },
+        "shippingDestination": { "@type": "DefinedRegion", "addressCountry": "US" },
+        "deliveryTime": {
+          "@type": "ShippingDeliveryTime",
+          "handlingTime": { "@type": "QuantitativeValue", "minValue": 1, "maxValue": 4, "unitCode": "DAY" },
+          "transitTime": { "@type": "QuantitativeValue", "minValue": 1, "maxValue": 5, "unitCode": "DAY" }
+        }
+      }
     },
     "additionalProperty": [
       { "@type": "PropertyValue", "name": "Certificate Number", "value": d.certificate_number || '' },
