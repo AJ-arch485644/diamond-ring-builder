@@ -60,8 +60,11 @@ function buildSlug(d) {
 
 function buildPage(d) {
   const slug = buildSlug(d);
+  // Fancy shapes come from Nivoda with no cut grade (literal '-') — don't let
+  // that leak into copy as "- cut" or into structured data
+  const cut = (d.cut && String(d.cut).trim() && d.cut !== '-') ? d.cut : null;
   const title = `${d.carat}ct ${d.shape} ${d.color} ${d.clarity} Lab Diamond | ${d.lab} ${d.certificate_number} | Diyona`;
-  const desc = `Shop this ${d.carat} carat ${d.shape} cut lab-grown diamond. ${d.color} color, ${d.clarity} clarity, ${d.cut} cut. ${d.lab} certified #${d.certificate_number}. Free shipping, 30-day returns.`;
+  const desc = `Shop this ${d.carat} carat ${d.shape} cut lab-grown diamond. ${d.color} color, ${d.clarity} clarity${cut ? `, ${cut} cut` : ''}. ${d.lab} certified #${d.certificate_number}. Free shipping, 30-day returns.`;
   const canonical = `https://diyona.com/a/lab-diamonds/${slug}`;
   const image = d.image_url || 'https://diyona.com/cdn/shop/files/diyona-logo.png';
   const ringBuilderUrl = `https://diyona.com/pages/diamond-detail?sku=${encodeURIComponent(d.sku)}&ring_builder=true`;
@@ -90,8 +93,8 @@ function buildPage(d) {
       { "@type": "PropertyValue", "name": "Shape", "value": d.shape || '' },
       { "@type": "PropertyValue", "name": "Color Grade", "value": d.color || '' },
       { "@type": "PropertyValue", "name": "Clarity Grade", "value": d.clarity || '' },
-      { "@type": "PropertyValue", "name": "Cut Grade", "value": d.cut || '' }
-    ]
+      { "@type": "PropertyValue", "name": "Cut Grade", "value": cut || '' }
+    ].filter(p => p.value)
   });
 
   return `<!DOCTYPE html>
@@ -110,6 +113,7 @@ function buildPage(d) {
   <meta property="og:price:amount" content="${d.price_usd || 0}">
   <meta property="og:price:currency" content="USD">
   <meta name="robots" content="index, follow">
+  <link rel="icon" type="image/png" href="https://diyona.com/cdn/shop/files/FAVICON_DIYONA_32x32.png">
   <script type="application/ld+json">${jsonLd}</script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -186,7 +190,7 @@ function buildPage(d) {
       font-size: 0.75rem;
       text-transform: uppercase;
       letter-spacing: 1px;
-      color: #888;
+      color: #6b6b6b;
       margin-bottom: 6px;
     }
     .spec-card .value {
@@ -266,7 +270,7 @@ function buildPage(d) {
     }
     .trust-badge .icon { font-size: 1.75rem; margin-bottom: 8px; }
     .trust-badge .badge-title { font-weight: 600; font-size: 0.9rem; color: #001f1a; }
-    .trust-badge .badge-sub { font-size: 0.8rem; color: #888; margin-top: 4px; }
+    .trust-badge .badge-sub { font-size: 0.8rem; color: #6b6b6b; margin-top: 4px; }
 
     /* Footer */
     .footer {
@@ -276,7 +280,7 @@ function buildPage(d) {
       padding: 32px 24px;
       font-size: 0.85rem;
     }
-    .footer a { color: #c9a94e; }
+    .footer a { color: #c9a94e; text-decoration: underline; }
 
     @media (max-width: 600px) {
       .specs-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
@@ -288,7 +292,7 @@ function buildPage(d) {
     // Redirect real users to the ring builder — bots/crawlers don't execute JS so they see the SEO page
     (function(){
       var ua = navigator.userAgent.toLowerCase();
-      var isBot = /googlebot|bingbot|yandex|baiduspider|facebookexternalhit|twitterbot|rogerbot|linkedinbot|embedly|showyoubot|outbrain|pinterest|slackbot|vkshare|w3c_validator|semrush|ahrefs|mj12bot|dotbot|oai-searchbot|gptbot|chatgpt-user|perplexitybot|perplexity-user|claudebot|claude-web|anthropic-ai|amazonbot|applebot|duckduckbot|meta-externalagent|bytespider/i.test(ua);
+      var isBot = /googlebot|bingbot|yandex|baiduspider|facebookexternalhit|twitterbot|rogerbot|linkedinbot|embedly|showyoubot|outbrain|pinterest|slackbot|vkshare|w3c_validator|semrush|ahrefs|mj12bot|dotbot|oai-searchbot|gptbot|chatgpt-user|perplexitybot|perplexity-user|claudebot|claude-web|anthropic-ai|amazonbot|applebot|duckduckbot|meta-externalagent|bytespider|chrome-lighthouse|google-inspectiontool/i.test(ua);
       if (!isBot) {
         window.location.replace('https://diyona.com/pages/diamond-detail?sku=' + encodeURIComponent('${esc(d.sku)}') + '&ring_builder=true');
       }
@@ -302,6 +306,7 @@ function buildPage(d) {
     </a>
   </header>
 
+  <main>
   <section class="hero">
     <h1>${esc(d.carat)}ct ${esc(d.shape)} Lab-Grown Diamond</h1>
     <p class="cert">${esc(d.lab)} Certified &middot; #${esc(d.certificate_number)}</p>
@@ -312,7 +317,7 @@ function buildPage(d) {
     <div class="spec-card"><div class="label">Carat</div><div class="value">${esc(d.carat)}</div></div>
     <div class="spec-card"><div class="label">Color</div><div class="value">${esc(d.color)}</div></div>
     <div class="spec-card"><div class="label">Clarity</div><div class="value">${esc(d.clarity)}</div></div>
-    <div class="spec-card"><div class="label">Cut</div><div class="value">${esc(d.cut || 'N/A')}</div></div>
+    <div class="spec-card"><div class="label">Cut</div><div class="value">${esc(cut || 'N/A')}</div></div>
     <div class="spec-card"><div class="label">Lab</div><div class="value">${esc(d.lab)}</div></div>
     <div class="spec-card"><div class="label">Certificate</div><div class="value">${esc(d.certificate_number)}</div></div>
   </div>
@@ -329,7 +334,7 @@ function buildPage(d) {
       <tr><td>Carat Weight</td><td>${esc(d.carat)}</td></tr>
       <tr><td>Color Grade</td><td>${esc(d.color)}</td></tr>
       <tr><td>Clarity Grade</td><td>${esc(d.clarity)}</td></tr>
-      <tr><td>Cut Grade</td><td>${esc(d.cut || 'N/A')}</td></tr>
+      <tr><td>Cut Grade</td><td>${esc(cut || 'N/A')}</td></tr>
       <tr><td>Polish</td><td>${esc(d.polish || 'N/A')}</td></tr>
       <tr><td>Symmetry</td><td>${esc(d.symmetry || 'N/A')}</td></tr>
       <tr><td>Fluorescence</td><td>${esc(d.fluorescence || 'None')}</td></tr>
@@ -363,6 +368,7 @@ function buildPage(d) {
       <div class="badge-sub">We stand behind every stone</div>
     </div>
   </div>
+  </main>
 
   <footer class="footer">
     <p>&copy; ${new Date().getFullYear()} <a href="https://diyona.com">Diyona</a>. All rights reserved.</p>
@@ -380,6 +386,7 @@ function build404() {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Diamond Not Found | Diyona</title>
   <meta name="robots" content="noindex, nofollow">
+  <link rel="icon" type="image/png" href="https://diyona.com/cdn/shop/files/FAVICON_DIYONA_32x32.png">
   <style>
     body {
       font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
