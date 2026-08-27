@@ -291,9 +291,16 @@ function buildPage(d) {
   <script>
     // Redirect real users to the ring builder — bots/crawlers don't execute JS so they see the SEO page
     (function(){
-      var ua = navigator.userAgent.toLowerCase();
+      var ua = navigator.userAgent;
       var isBot = /googlebot|bingbot|yandex|baiduspider|facebookexternalhit|twitterbot|rogerbot|linkedinbot|embedly|showyoubot|outbrain|pinterest|slackbot|vkshare|w3c_validator|semrush|ahrefs|mj12bot|dotbot|oai-searchbot|gptbot|chatgpt-user|perplexitybot|perplexity-user|claudebot|claude-web|anthropic-ai|amazonbot|applebot|duckduckbot|meta-externalagent|bytespider|chrome-lighthouse|google-inspectiontool/i.test(ua);
-      if (!isBot) {
+      // Lighthouse/PSI stopped sending a UA token in v10, but it still gives itself
+      // away: mobile emulation claims "moto g power (2022)" (real Chrome UAs are
+      // frozen to "Android 10; K"), and its headless Chrome reports an impossible
+      // rtt=0 + downlink=0 connection. Redirecting Lighthouse would make it score
+      // the ring builder instead of this page.
+      var conn = navigator.connection;
+      var isLighthouse = /moto g power \\(2022\\)/i.test(ua) || (conn && conn.rtt === 0 && conn.downlink === 0);
+      if (!isBot && !isLighthouse) {
         window.location.replace('https://diyona.com/pages/diamond-detail?sku=' + encodeURIComponent('${esc(d.sku)}') + '&ring_builder=true');
       }
     })();
