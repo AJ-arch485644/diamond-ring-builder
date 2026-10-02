@@ -30,7 +30,7 @@ $$;
 DROP TRIGGER IF EXISTS ai_catalog_audit_immutable ON public.ai_catalog_state;
 CREATE TRIGGER ai_catalog_audit_immutable BEFORE UPDATE OR DELETE ON public.ai_catalog_state
 FOR EACH ROW EXECUTE FUNCTION public.ai_catalog_protect_audit();
-REVOKE ALL ON FUNCTION public.ai_catalog_protect_audit() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.ai_catalog_protect_audit() FROM PUBLIC, anon, authenticated, service_role;
 
 CREATE OR REPLACE FUNCTION public.ai_catalog_acquire_lease(p_shop text, p_owner text, p_ttl_seconds integer DEFAULT 180)
 RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
