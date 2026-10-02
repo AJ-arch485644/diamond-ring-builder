@@ -4,7 +4,10 @@
   "description": "Diamond inventory API powered by Nivoda SFTP feed",
   "scripts": {
     "sync": "node scripts/sync-nivoda.js",
-    "test:sftp": "node scripts/test-sftp.js"
+    "test:sftp": "node scripts/test-sftp.js",
+    "test:ai-catalog": "node --test tests/ai-catalog-*.test.js",
+    "catalog:dry-run": "node scripts/sync-ai-catalog-metafields.js --mode full",
+    "catalog:sync": "node scripts/sync-ai-catalog-metafields.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",

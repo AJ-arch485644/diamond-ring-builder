@@ -1,0 +1,62 @@
+# Isolated AI Catalog updater
+
+This background worker writes two existing-product metafields: `custom.ai_catalog_description` and `custom.ai_catalog_category`. It has no route, never creates products, and is not imported by the Ring builder. The product creation, search, pricing, stock, customs, shipping, checkout, feed jobs and Vercel configuration are unchanged.
+
+New-product metadata is delayed until a successful background run. The owner accepted this tradeoff. GitHub schedules target 15-minute checks and a nightly complete scan; they are not a delivery-time guarantee. Shopify Catalog ingestion adds a separate delay.
+
+## Data and review
+
+Jewelry descriptions come from a private reviewed profile bundle. Each entry is keyed by the exact Shopify Product GID and binds `description` and `category` to a semantic `sourceHash`. Source or variant changes require a refreshed review. New unknown jewelry is blocked for review, rather than described by inference. The three original pilot descriptions are preserved verbatim.
+
+Loose diamonds use their own Shopify identity and factual title, corroborated against an available supplier row with the exact SKU. Missing or conflicting supplier facts block the write. The prose contains carat, shape, origin, color and clarity only. It does not include prices, availability claims, certificates, competitor specifications or competitor aliases. `Loose diamonds` is custom category text, not a fabricated Shopify taxonomy ID.
+
+The supplier check is a metadata safeguard. This worker does not synchronize stock or remove sold products. Verify the existing supplier-to-Shopify availability lifecycle separately before activating a Catalog mapping that includes loose diamonds.
+
+This repository and its Actions logs are public. Keep product exports, profiles, unpublished product details, tokens, backups, audit records and diffs in private storage. The worker prints aggregate counts only. Do not upload raw run artifacts to GitHub Actions or releases.
+
+## One-time setup
+
+1. Review and apply `db/ai-catalog-state.sql` in the existing Supabase project. It adds isolated worker state and lease objects with service-role-only access. It does not alter diamond inventory or Shopify token tables. The application does not execute migrations automatically.
+2. Install the reviewed profile bundle into the private worker store using `scripts/install-ai-catalog-profiles.js`. Supply the file locally; never commit it or paste its contents into an issue. The local rollout package retains the original reviewed sources and backups.
+3. Existing Actions secrets are reused by name: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, and `SHOPIFY_STORE` (the full `*.myshopify.com` domain). The worker reads the existing store token from `shopify_tokens`. Verify its Shopify product/metafield read and write scopes through a dry run and canary; a successful inventory feed does not prove those permissions.
+4. Leave repository variables `AI_CATALOG_SCHEDULE_ENABLED` and `AI_CATALOG_WRITES_ENABLED` absent or false until verification. Both the script's `--write` flag and the write-enable variable are required. Scheduled jobs are disabled by default. The workflow accepts production credentials only on `main`.
+
+After setting the three credentials in the local process environment, install the private bundle with:
+
+```sh
+AI_CATALOG_INSTALL_PROFILES=true node scripts/install-ai-catalog-profiles.js /absolute/private/path/reviewed-jewelry-profiles.json
+```
+
+Installation backs up the previous bundle in the private audit and verifies readback under the same worker lease. Do not put credential values into command history.
+
+The migration and profile installation are separate deployment steps. Merging this code does not enable the schedule, perform a backfill, or change Catalog mapping.
+
+## Verification and rollout
+
+Run `npm ci --ignore-scripts` and `npm run test:ai-catalog`. Tests mock Shopify and Supabase; they never call the product-creation endpoint or place an order.
+
+Start with the manual workflow in read-only mode. It reads live Shopify and supplier data and plans updates without writing Shopify metadata, ownership, checkpoints or audits. A local equivalent is:
+
+```sh
+npm run catalog:dry-run -- --max-products 25000 --max-duration-seconds 7200
+```
+
+A dry run must report whether the scan completed. A whole catalog read is deliberately paced and can take over an hour; the manual workflow allows a two-hour runtime budget. Scheduled slices retain a 20-minute budget. Dry runs do not save checkpoints: allow the complete run to finish or use exact canary IDs for a narrower diagnostic. A historical file replay validates transformations, not production credential scopes or supplier freshness.
+
+After resolving exceptions, enable writes for a manual canary of a few exact product IDs and a small write cap. Take a new dated private catalog snapshot first. Every proposed write also requires a durable private audit entry containing its immediate source and old values. Readback must confirm both saved values and unchanged source. Check representative pilot jewelry, nonpilot jewelry, a loose diamond, and a newly created product. Buyer-flow verification must not accidentally create a live product or order.
+
+Use bounded full-mode slices for the backfill. Incomplete scans resume from saved progress; small limits can cause a page to be replayed, and already-written values should become no-ops. Canary runs never advance the global watermark. A scheduled incremental run without an initial checkpoint first requires a full scan. Enable scheduling only after the canary succeeds and sufficient valid coverage is verified.
+
+Mapping remains a separate decision. Preview the original three styles, other jewelry, loose diamonds and new products before saving the store-wide custom sources. Verify actual Catalog ingestion afterward. Start measurement at the next midnight in America/New_York after confirmed ingestion; retain the original baseline and capture seven complete pre-activation days.
+
+## Failure handling and operations
+
+Writes are atomic pairs and always use Shopify `compareDigest`. An absent field uses explicit `null`. Existing outputs are writable only when ownership records still match their value and digest. Identical existing values can be left as no-ops without adopting ownership. A manual edit, an unknown profile, unavailable supplier facts, or a conflicting product requires attention; it must not be overwritten.
+
+Read calls have bounded retries and conservative pacing. An ambiguous mutation is not blindly retried. Post-write verification or persistence failures stop progress; inspect private audit state before retrying. Fresh source and output digests are checked again for each proposed write. Lease/concurrency controls serialize the worker, and only completed progress advances the scan checkpoint.
+
+Review private blocked-record counts and last completed scan times after enabling. GitHub failure notifications cover failed executions, not a workflow that never starts. Monitor the age of the private last-completed-run timestamp externally; a missed-run alert is a deployment requirement, not something a dormant job can send. Public-repository scheduled workflows may be disabled after 60 days without repository activity. A 15-minute target must not be advertised as a guarantee.
+
+Stop scheduling and writes with the two repository variables if a problem occurs. Restore Catalog mapping to its original standard sources first if necessary. Restore only this worker's two metafields, from the private pre-write audit, when their current values/digests still match the worker's outputs. Preserve later merchant edits. Removal of a field that was originally absent requires a separately reviewed, narrowly scoped rollback; do not replay a whole-product export as a store restore.
+
+References: [Shopify atomic compare-and-set](https://shopify.dev/docs/api/admin-graphql/latest/mutations/metafieldsSet), [GitHub scheduled workflow behavior](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule), [Supabase row-level security](https://supabase.com/docs/guides/database/postgres/row-level-security).

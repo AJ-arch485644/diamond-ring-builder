@@ -1,0 +1,35 @@
+name: AI Catalog isolated tests
+
+on:
+  pull_request:
+    paths:
+      - 'lib/ai-catalog-*.js'
+      - 'scripts/*ai-catalog*.js'
+      - 'tests/ai-catalog-*.test.js'
+      - 'db/ai-catalog-state.sql'
+      - '.github/workflows/ai-catalog-*.yml'
+      - 'package*.json'
+  push:
+    paths:
+      - 'lib/ai-catalog-*.js'
+      - 'scripts/*ai-catalog*.js'
+      - 'tests/ai-catalog-*.test.js'
+      - 'db/ai-catalog-state.sql'
+      - '.github/workflows/ai-catalog-*.yml'
+      - 'package*.json'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run test:ai-catalog
