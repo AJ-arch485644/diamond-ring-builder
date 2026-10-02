@@ -5,7 +5,10 @@
 const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
 
-function options(args, env = process.env) {
+function options(args, env = process.env, now = Date.now) {
+  if (args.includes('--approved-canary')) {
+    return require('../lib/ai-catalog-canary').approvedCanaryOptions(args, env, now);
+  }
   const values = {};
   const allowed = new Set(['mode', 'max-writes', 'max-products', 'max-duration-seconds', 'product-ids']);
   let write = false;
@@ -38,7 +41,8 @@ function options(args, env = process.env) {
 }
 
 async function main() {
-  const opts = options(process.argv.slice(2));
+  const args = process.argv.slice(2);
+  const opts = options(args);
   const { createClient } = require('@supabase/supabase-js');
   const { createShopifyClient, createPrivateStore } = require('../lib/ai-catalog-io');
   const { syncCatalog } = require('../lib/ai-catalog-sync');
@@ -49,16 +53,20 @@ async function main() {
     auth: { persistSession: false, autoRefreshToken: false },
     global: { fetch: (url, init = {}) => fetch(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(20000) }) },
   });
-  const store = createPrivateStore(supabase, { shop, owner: randomUUID() });
+  let store = createPrivateStore(supabase, { shop, owner: randomUUID() });
   const profiles = await store.getProfileBundle();
   if (!profiles || !Object.keys(profiles).length) throw new Error('REVIEWED_PROFILES_NOT_INSTALLED');
   const token = await store.getShopifyToken(shop);
-  const shopify = createShopifyClient({ shop, token });
+  let shopify = createShopifyClient({ shop, token });
+  if (args.includes('--approved-canary')) {
+    ({ shopify, store } = require('../lib/ai-catalog-canary').scopeApprovedCanary({ shopify, store }));
+  }
   const summary = await syncCatalog({ ...opts, shopify, store, profiles, getSupplier: sku => store.getSupplier(sku) });
   // Counts/status only: this repository and its Actions logs are public.
   const output = JSON.stringify(summary);
   process.stdout.write(output + '\n');
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `AI Catalog updater aggregate result\n\n\`\`\`json\n${output}\n\`\`\`\n`);
+  if (args.includes('--approved-canary')) require('../lib/ai-catalog-canary').assertApprovedCanaryResult(summary);
   if (summary.failed || summary.errors?.length || summary.sourceRaces) process.exitCode = 1;
 }
 

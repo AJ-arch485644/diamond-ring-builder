@@ -31,6 +31,14 @@ Installation backs up the previous bundle in the private audit and verifies read
 
 The migration and profile installation are separate deployment steps. Merging this code does not enable the schedule, perform a backfill, or change Catalog mapping.
 
+## Fixed four-product verification
+
+The separate `AI Catalog approved four-product canary` manual workflow has no inputs and is a one-time authorization for products `9901307396412`, `9979207221564`, `15402163142972`, and `15402165829948`. It refuses all other products, catalog listing, repeat write attempts for a product, and more than four attempted atomic metafield-pair writes. Both ordinary write and schedule variables must remain absent or false. The normal worker's write gate is unchanged.
+
+`--approved-canary` accepts no additional arguments and runs only from that workflow on this repository's `main`, for the fixed Diyona Shopify store and verified Supabase project, before **2026-10-03 00:00 UTC**. Its private deterministic insert-only receipt is claimed under the existing worker lease before any product write. The receipt is consumed even if later work fails; reruns cannot reuse this authorization. It shares the ordinary worker's concurrency group. A failed receipt claim releases the lease before returning. No database migration or purchase-route change is required.
+
+Use the already-reviewed product content, fresh pre-write backups, compare-and-set checks, and readback verification of the ordinary worker. Success requires exactly four written and verified products, a complete run with no blocked/skipped/no-op products, and no global checkpoint advance. A failed or expired canary needs a new reviewed authorization; do not delete its receipt or enable the broad write/schedule gates to retry it. Catalog mapping remains separate and unchanged.
+
 ## Verification and rollout
 
 Run `npm ci --ignore-scripts` and `npm run test:ai-catalog`. Tests mock Shopify and Supabase; they never call the product-creation endpoint or place an order.
