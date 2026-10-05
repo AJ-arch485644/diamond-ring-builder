@@ -4,6 +4,12 @@
 // Deliberate private configuration step; never invoked by a scheduled job.
 const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
+const { isDeepStrictEqual } = require('node:util');
+
+function verifyProfileReadback(actual, proposed) {
+  // Review flags and future private configuration must survive installation too.
+  if (!isDeepStrictEqual(actual, proposed)) throw new Error('PROFILE_INSTALL_READBACK_FAILED');
+}
 
 async function main() {
   if (process.argv.length !== 3 || process.env.AI_CATALOG_INSTALL_PROFILES !== 'true') throw new Error('PROFILE_INSTALL_NOT_ENABLED');
@@ -26,8 +32,7 @@ async function main() {
     await store.renewLease();
     await store.installProfileBundle(profiles);
     const actual = await store.getProfileBundle();
-    const stable = value => JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([id, p]) => [id, p.sourceHash, p.description, p.category]));
-    if (stable(actual) !== stable(profiles)) throw new Error('PROFILE_INSTALL_READBACK_FAILED');
+    verifyProfileReadback(actual, profiles);
     console.log(JSON.stringify({ installedProfiles: Object.keys(profiles).length }));
   } finally { await store.releaseLease(); }
 }
@@ -36,4 +41,4 @@ if (require.main === module) main().catch(() => {
   console.error('AI_CATALOG_PROFILE_INSTALL_FAILED: private configuration was not verified.');
   process.exitCode = 1;
 });
-module.exports = { main };
+module.exports = { main, verifyProfileReadback };
