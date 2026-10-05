@@ -45,7 +45,7 @@ async function main() {
   const opts = options(args);
   const { createClient } = require('@supabase/supabase-js');
   const { createShopifyClient, createPrivateStore } = require('../lib/ai-catalog-io');
-  const { syncCatalog } = require('../lib/ai-catalog-sync');
+  const { runCatalog } = require('../lib/ai-catalog-runner');
   const shop = process.env.SHOPIFY_STORE;
   if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(shop || '')) throw new Error('INVALID_SHOP_DOMAIN');
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) throw new Error('MISSING_PRIVATE_RUNTIME_CREDENTIALS');
@@ -61,7 +61,7 @@ async function main() {
   if (args.includes('--approved-canary')) {
     ({ shopify, store } = require('../lib/ai-catalog-canary').scopeApprovedCanary({ shopify, store }));
   }
-  const summary = await syncCatalog({ ...opts, shopify, store, profiles, getSupplier: sku => store.getSupplier(sku) });
+  const summary = await runCatalog({ ...opts, shopify, store, profiles, getSupplier: sku => store.getSupplier(sku) });
   // Counts/status only: this repository and its Actions logs are public.
   const output = JSON.stringify(summary);
   process.stdout.write(output + '\n');

@@ -1,0 +1,33 @@
+name: AI Catalog health
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '13 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-catalog-health
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.AI_CATALOG_SCHEDULE_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/check-ai-catalog-health.js
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
+          AI_CATALOG_SCHEDULE_ENABLED: ${{ vars.AI_CATALOG_SCHEDULE_ENABLED }}
+          AI_CATALOG_WRITES_ENABLED: ${{ vars.AI_CATALOG_WRITES_ENABLED }}

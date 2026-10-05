@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { FIELDS, FACT_KEYS, sourceHash, renderMetadata, hashValue } = require('../lib/ai-catalog-metadata');
+const { FIELDS, FACT_KEYS, sourceHash, renderMetadata, hashValue, requiresSupplier } = require('../lib/ai-catalog-metadata');
 
 const copy = (object) => JSON.parse(JSON.stringify(object));
 function jewelry() {
@@ -27,11 +27,8 @@ function diamond() {
   product.variants = [{ id: 'gid://shopify/ProductVariant/201', title: 'Default Title', sku: 'SUPPLIER-SKU', selectedOptions: [{ name: 'Title', value: 'Default Title' }], metafields: {} }];
   return product;
 }
-function supplier(overrides = {}) {
-  return { sku: 'SUPPLIER-SKU', carat: 2.5, shape: 'Marquise', color: 'D', clarity: 'VVS1', is_lab_grown: true, availability: 'available', ...overrides };
-}
-function readyDiamond(product = diamond(), record = supplier()) {
-  return renderMetadata(product, { supplier: record });
+function readyDiamond(product = diamond()) {
+  return renderMetadata(product);
 }
 
 test('exports only the two authorized fields and immutable factual key allowlist', () => {
@@ -39,6 +36,7 @@ test('exports only the two authorized fields and immutable factual key allowlist
   assert.ok(Object.isFrozen(FIELDS));
   assert.ok(Object.isFrozen(FACT_KEYS));
   assert.ok(!FACT_KEYS.includes('custom.ai_catalog_description'));
+  assert.equal(requiresSupplier, false);
   assert.equal(hashValue('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
   assert.throws(() => hashValue({}), TypeError);
 });
@@ -150,7 +148,7 @@ test('malformed input fails closed without throwing or emitting fields', () => {
   }
 });
 
-test('corroborated loose stone contains only its exact core facts', () => {
+test('Shopify source alone produces only the exact loose-stone core facts', () => {
   const result = readyDiamond();
   assert.equal(result.status, 'ready');
   assert.equal(result.fields[0].value, 'A 2.5-carat marquise lab-grown loose diamond. Color: D. Clarity: VVS1.');
@@ -158,40 +156,44 @@ test('corroborated loose stone contains only its exact core facts', () => {
   assert.doesNotMatch(result.fields[0].value, /in stock|price|certif|shipping|setting|carat total/i);
 });
 
-test('missing supplier, wrong SKU and unavailable supplier cannot authorize metadata', () => {
-  assert.equal(renderMetadata(diamond()).reason, 'supplier_identity_unverified');
-  assert.equal(readyDiamond(diamond(), supplier({ sku: 'other' })).reason, 'supplier_identity_unverified');
-  for (const availability of ['unavailable', 'reserved', 'sold', undefined]) {
-    assert.equal(readyDiamond(diamond(), supplier({ availability })).reason, 'supplier_not_available');
+test('supplier absence, availability and conflicting supplier facts have no description dependency', () => {
+  const p = diamond(); const expected = readyDiamond(p);
+  for (const supplier of [undefined, null, {}, { sku: 'different', carat: 6, shape: 'Oval', color: 'E', clarity: 'VS1', is_lab_grown: false, availability: 'sold', supplier_name: 'PRIVATE COMPANY', certificate_url: 'https://private.example/report' }]) {
+    assert.deepEqual(renderMetadata(p, { supplier }), expected);
   }
 });
 
-test('supplier must corroborate each core fact and explicit origin boolean', () => {
-  for (const override of [{ carat: 6 }, { carat: null }, { shape: 'Oval' }, { color: 'E' }, { clarity: 'VS1' }, { is_lab_grown: false }, { is_lab_grown: 'true' }, { is_lab_grown: undefined }]) {
-    assert.equal(readyDiamond(diamond(), supplier(override)).reason, 'supplier_facts_conflict');
-  }
-});
-
-test('one exact SKU variant is required for loose diamond identification', () => {
+test('one exact variant is required and malformed nonempty SKUs remain blocked', () => {
   const p = diamond(); p.variants.push({ ...copy(p.variants[0]), id: 'gid://shopify/ProductVariant/202' });
   assert.equal(readyDiamond(p).reason, 'diamond_variant_identity_ambiguous');
-  for (const sku of ['', ' ', null, ' SUPPLIER-SKU', 'x\n', 'x'.repeat(256)]) {
+  for (const sku of [' ', 42, {}, ' SUPPLIER-SKU', 'x\n', 'x'.repeat(256)]) {
     const d = diamond(); d.variants[0].sku = sku;
     assert.equal(readyDiamond(d).reason, 'diamond_sku_missing_or_invalid');
   }
 });
 
-test('diamond profiles cannot bypass supplier verification', () => {
+test('null, undefined and empty legacy SKUs do not prevent exact-product factual descriptions', () => {
+  const expected = readyDiamond().fields;
+  for (const sku of [null, undefined, '']) {
+    const p = diamond(); p.variants[0].sku = sku;
+    assert.equal(readyDiamond(p).status, 'ready');
+    assert.deepEqual(readyDiamond(p).fields, expected);
+  }
+  const incomplete = diamond(); delete incomplete.variants[0].sku;
+  assert.equal(readyDiamond(incomplete).reason, 'incomplete_or_invalid_source');
+});
+
+test('diamond profiles cannot bypass same-product source validation', () => {
   const p = diamond();
-  assert.equal(renderMetadata(p, { profiles: profile(p) }).reason, 'supplier_identity_unverified');
+  p.title = 'A mystery diamond';
+  assert.equal(renderMetadata(p, { profiles: profile(p) }).reason, 'diamond_title_unparsed');
 });
 
 test('natural/lab origins remain distinct and price/certification/dimensions are omitted', () => {
   const p = diamond();
   p.title = '0.70ct Emerald Natural Diamond (Colour G, Clarity VS1, GIA Certified)';
   p.description = 'Type: Natural Diamond Shape: Emerald Carat: 0.70 Colour: G Clarity: VS1 Polish: Excellent Measurements: 5.69x4.17x2.89mm Certificate: GIA';
-  const s = supplier({ carat: '0.70', shape: 'Emerald', color: 'G', clarity: 'VS1', is_lab_grown: false, price_usd: 500, lab: 'GIA', measurements: '5.69x4.17x2.89' });
-  assert.equal(readyDiamond(p, s).fields[0].value, 'A 0.7-carat emerald natural loose diamond. Color: G. Clarity: VS1.');
+  assert.equal(readyDiamond(p).fields[0].value, 'A 0.7-carat emerald natural loose diamond. Color: G. Clarity: VS1.');
 });
 
 test('expanded and compact supported titles yield identical factual prose', () => {
@@ -203,7 +205,6 @@ test('expanded and compact supported titles yield identical factual prose', () =
 
 test('unknown, incomplete, conflicting, malformed, and out-of-range title facts are blocked', () => {
   for (const title of [
-    '2.5ct Marquise Lab Grown Diamond', '2.5ct Marquise IGI Certified Lab Grown Diamond',
     '2.5ct Marquise Fancy Yellow VVS1 Lab Diamond', '2.5ct Marquise D SI3 Lab Diamond',
     '2.5ct Marquise D VVS1 Diamond', '2.5ct Mystery D VVS1 Lab Diamond',
     '0ct Marquise D VVS1 Lab Diamond', '-2.5ct Marquise D VVS1 Lab Diamond',
@@ -218,7 +219,7 @@ test('unknown, incomplete, conflicting, malformed, and out-of-range title facts 
   }
 });
 
-test('structured descriptions cannot contradict corroborated title and supplier', () => {
+test('structured descriptions cannot contradict the title or contain duplicate core labels', () => {
   const p = diamond();
   p.description = 'Type: Lab Grown Diamond Shape: Marquise Carat: 2.50 Colour: D Clarity: VVS1';
   assert.equal(readyDiamond(p).status, 'ready');
@@ -226,21 +227,88 @@ test('structured descriptions cannot contradict corroborated title and supplier'
     p.description.replace('2.50', '6.00'), p.description.replace('Marquise', 'Oval'),
     p.description.replace('Lab Grown', 'Natural'), p.description.replace('D Clarity', 'E Clarity'),
     p.description.replace('VVS1', 'VS1'), 'Type: Lab Grown Diamond Shape: Marquise',
+    `${p.description} Colour: E`, `${p.description} Clarity: VVS1`,
+    `${p.description} Type: Natural Diamond`, `${p.description} Carat: 2.50`,
+    p.description.replace('VVS1', 'SI3'), p.description.replace('Marquise', 'Marquise-ish'),
+    p.description.replace('Marquise', 'Marquise modified'),
+    p.description.replace('Lab Grown Diamond', 'Lab Grown Diamond Natural Diamond'),
+    `${p.description} This is a natural six-carat oval diamond.`,
   ]) {
     const d = diamond(); d.description = body;
     assert.equal(readyDiamond(d).reason, 'diamond_description_conflict');
   }
 });
 
-test('shape variants are not silently treated as equivalent', () => {
+test('distinct shape descriptions are preserved and conflicting body shapes are blocked', () => {
   const p = diamond(); p.title = '2.5ct Cushion Modified D VVS1 Lab Diamond';
-  assert.equal(readyDiamond(p, supplier({ shape: 'Cushion' })).reason, 'supplier_facts_conflict');
-  assert.equal(readyDiamond(p, supplier({ shape: 'CUSHION_MODIFIED' })).status, 'ready');
+  assert.equal(readyDiamond(p).fields[0].value, 'A 2.5-carat cushion modified lab-grown loose diamond. Color: D. Clarity: VVS1.');
+  p.description = 'Type: Lab Grown Diamond Shape: Cushion Carat: 2.5 Colour: D Clarity: VVS1';
+  assert.equal(readyDiamond(p).reason, 'diamond_description_conflict');
 });
 
-test('supplier changes alter render validation although Shopify source hash stays stable', () => {
+test('stock and price changes cannot add availability claims or change factual descriptions', () => {
   const p = diamond(); const before = sourceHash(p);
-  assert.equal(readyDiamond(p).status, 'ready');
-  assert.equal(readyDiamond(p, supplier({ availability: 'unavailable' })).status, 'blocked');
+  const expected = readyDiamond(p);
+  p.variants[0].availableForSale = false;
+  p.variants[0].inventoryQuantity = 0;
+  p.variants[0].price = '999.99';
   assert.equal(sourceHash(p), before);
+  assert.deepEqual(readyDiamond(p), expected);
+});
+
+test('recognized legacy titles omit missing grades and discard laboratory suffixes', () => {
+  for (const title of ['2.5 Carat Marquise IGI Certified Lab Grown Diamond', '2.5ct Marquise Lab Grown Diamond']) {
+    const p = diamond(); p.title = title; p.description = title;
+    assert.equal(readyDiamond(p).fields[0].value, 'A 2.5-carat marquise lab-grown loose diamond.');
+  }
+  for (const title of ['2.5ct Marquise D VVS1 Lab Diamond | IGI LG123456789', '2.5ct Marquise D VVS1 Lab Diamond IGI LG123456789']) {
+    const p = diamond(); p.title = title;
+    assert.equal(readyDiamond(p).fields[0].value, 'A 2.5-carat marquise lab-grown loose diamond. Color: D. Clarity: VVS1.');
+  }
+  const p = diamond(); p.title += ' | Price $200';
+  assert.equal(readyDiamond(p).reason, 'diamond_title_unparsed');
+});
+
+test('optional grades come only from this product labeled body and are never inferred from tags', () => {
+  const p = diamond(); p.title = '2.5ct Marquise Lab Grown Diamond';
+  p.tags.push('D', 'VVS1');
+  assert.equal(readyDiamond(p).fields[0].value, 'A 2.5-carat marquise lab-grown loose diamond.');
+  p.description = 'Type: Lab Grown Diamond Shape: Marquise Carat: 2.5 Colour: E Clarity: VS2';
+  assert.equal(readyDiamond(p).fields[0].value, 'A 2.5-carat marquise lab-grown loose diamond. Color: E. Clarity: VS2.');
+});
+
+test('known structured bodies discard certificates and links; unknown claims block without leaking text', () => {
+  const p = diamond();
+  p.description = 'Type: Lab Grown Diamond Shape: Marquise Carat: 2.50 Colour: D Clarity: VVS1 Certificate: IGI Certificate Number: LG123456789 Certificate PDF: https://private.example/report';
+  const result = readyDiamond(p);
+  assert.equal(result.fields[0].value, 'A 2.5-carat marquise lab-grown loose diamond. Color: D. Clarity: VVS1.');
+  assert.doesNotMatch(result.fields[0].value, /private|https|supplier|price|stock|shipping|delivery|certif|IGI|123/);
+  for (const extra of [' Supplier: PRIVATE COMPANY', ' Price: $123', ' In stock. Free shipping. Delivery tomorrow.']) {
+    const other = copy(p); other.description += extra;
+    assert.equal(readyDiamond(other).reason, 'diamond_description_conflict');
+    assert.deepEqual(readyDiamond(other).fields, []);
+  }
+});
+
+test('unrecognized nonempty diamond prose is blocked rather than silently discarded', () => {
+  const p = diamond(); p.description = 'A six-carat natural oval diamond.';
+  assert.equal(readyDiamond(p).reason, 'diamond_description_unparsed');
+});
+
+test('suitable source categories are preserved and neutral missing categories use the confirmed class', () => {
+  const p = diamond();
+  for (const name of ['Diamonds', 'Loose Diamonds', 'Gemstones', 'Loose gemstones']) {
+    p.category = { id: 'gid://shopify/TaxonomyCategory/source', name, fullName: `Jewelry > ${name}` };
+    assert.equal(readyDiamond(p).fields[1].value, name);
+  }
+  for (const category of [null, { name: 'Uncategorized' }, { name: 'Jewelry' }]) {
+    p.category = category;
+    assert.equal(readyDiamond(p).fields[1].value, 'Loose diamonds');
+  }
+  for (const category of [{ name: 'Rings' }, { name: 'Charms & Pendants' }, {}, { name: '' }, { name: 'Diamonds\n' }, 'Diamonds']) {
+    p.category = category;
+    assert.equal(readyDiamond(p).reason, 'diamond_category_conflict');
+  }
+  p.productType = ''; p.templateSuffix = ''; p.category = null;
+  assert.equal(renderMetadata(p).reason, 'unreviewed_product');
 });
