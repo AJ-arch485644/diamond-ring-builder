@@ -208,6 +208,21 @@ test('profiles require explicit installation; malformed profiles and DB errors f
   await assert.rejects(store.saveState({}), { code: 'STORE_WRITE_FAILED', message: 'STORE_WRITE_FAILED' });
 });
 
+test('private profile installation strictly validates and preserves internal-review flags', async () => {
+  const mock = mockSupabase(); const store = createPrivateStore(mock.client, { shop: SHOP });
+  const base = { sourceHash: 'a'.repeat(64), description: 'Reviewed add-on copy', category: 'Add-on' };
+  await store.acquireLease();
+  for (const flag of ['true', 1, null, {}, [], undefined]) {
+    await assert.rejects(store.installProfileBundle({ [ID]: { ...base, reviewedInternal: flag } }), { code: 'STORE_INVALID_PROFILES' });
+  }
+  await assert.rejects(store.getProfileBundle(), { code: 'STORE_PROFILES_MISSING' });
+  for (const flag of [true, false]) {
+    const bundle = { [ID]: { ...base, reviewedInternal: flag } };
+    await store.installProfileBundle(bundle);
+    assert.deepEqual(await store.getProfileBundle(), bundle);
+  }
+});
+
 test('every private write is fenced by the current lease owner', async () => {
   const mock = mockSupabase();
   const stale = createPrivateStore(mock.client, { shop: SHOP, owner: 'old-run' });

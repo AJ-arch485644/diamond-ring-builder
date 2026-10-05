@@ -108,7 +108,7 @@ test('rejects empty, oversized and invalid private profiles without trimming app
   assert.equal(result.fields[1].value, ' Rings ');
 });
 
-test('inactive products and internal fee/test products never produce fields', () => {
+test('inactive products and ordinary-reviewed internal fee/test products never produce fields', () => {
   for (const status of ['DRAFT', 'ARCHIVED']) {
     const p = jewelry(); p.status = status;
     const result = renderMetadata(p, { profiles: profile(p) });
@@ -121,6 +121,68 @@ test('inactive products and internal fee/test products never produce fields', ()
   ]) {
     const p = jewelry(); change(p);
     assert.equal(renderMetadata(p, { profiles: profile(p) }).reason, 'internal_or_fee_product');
+  }
+});
+
+test('explicit reviewed internal profiles describe only the reviewed item without changing source', () => {
+  for (const title of ['Diamond', 'Engraving Fee']) {
+    const p = diamond(); p.title = title; p.description = title === 'Diamond' ? "Don't Buy" : '';
+    const before = copy(p);
+    const profiles = profile(p, { reviewedInternal: true, description: p.description || 'Optional engraving charge.', category: 'Reviewed add-on' });
+    const result = renderMetadata(p, { profiles });
+    assert.equal(result.status, 'ready');
+    assert.deepEqual(result.fields, [
+      { namespace: 'custom', key: 'ai_catalog_description', type: 'multi_line_text_field', value: profiles[p.id].description },
+      { namespace: 'custom', key: 'ai_catalog_category', type: 'single_line_text_field', value: profiles[p.id].category },
+    ]);
+    assert.deepEqual(p, before);
+  }
+});
+
+test('reviewed internal permission requires an explicit own boolean flag', () => {
+  const p = diamond(); p.title = 'Engraving Fee';
+  for (const flag of [undefined, false]) {
+    const profiles = profile(p, flag === undefined ? {} : { reviewedInternal: flag });
+    assert.equal(renderMetadata(p, { profiles }).reason, 'internal_or_fee_product');
+  }
+  for (const flag of ['true', 1, null, {}, [], undefined]) {
+    assert.equal(renderMetadata(p, { profiles: profile(p, { reviewedInternal: flag }) }).reason, 'invalid_reviewed_profile');
+  }
+  const inherited = Object.assign(Object.create({ reviewedInternal: true }), profile(p)[p.id]);
+  assert.equal(renderMetadata(p, { profiles: { [p.id]: inherited } }).reason, 'internal_or_fee_product');
+  const ordinary = jewelry();
+  assert.equal(renderMetadata(ordinary, { profiles: profile(ordinary, { reviewedInternal: true }) }).reason, 'invalid_reviewed_profile');
+});
+
+test('reviewed internal approval cannot transfer by name, identity or source changes', () => {
+  const p = diamond(); p.title = 'Diamond'; p.description = "Don't Buy";
+  const profiles = profile(p, { reviewedInternal: true });
+  const other = copy(p); other.id = 'gid://shopify/Product/999';
+  assert.equal(renderMetadata(other, { profiles }).reason, 'internal_or_fee_product');
+  assert.equal(renderMetadata(p, { profiles: Object.create(profiles) }).reason, 'internal_or_fee_product');
+  for (const change of [
+    product => { product.description = 'Changed purpose'; },
+    product => { product.variants[0].id = 'gid://shopify/ProductVariant/999'; },
+    product => { product.title = '2ct Round D VS1 Lab Diamond'; product.description = ''; },
+  ]) {
+    const changed = copy(p); change(changed);
+    const result = renderMetadata(changed, { profiles });
+    assert.equal(result.reason, 'reviewed_source_changed');
+    assert.deepEqual(result.fields, []);
+  }
+});
+
+test('reviewed internal approval cannot bypass inactive or incomplete-source guards', () => {
+  const p = diamond(); p.title = 'Engraving Fee';
+  for (const status of ['DRAFT', 'ARCHIVED']) {
+    const inactive = { ...p, status };
+    assert.equal(renderMetadata(inactive, { profiles: profile(inactive, { reviewedInternal: true }) }).reason, 'inactive_product');
+  }
+  for (const change of [product => { product.complete = false; }, product => { product.variants = []; }]) {
+    const incomplete = copy(p); change(incomplete);
+    const result = renderMetadata(incomplete, { profiles: profile(incomplete, { reviewedInternal: true }) });
+    assert.equal(result.reason, 'incomplete_or_invalid_source');
+    assert.deepEqual(result.fields, []);
   }
 });
 
