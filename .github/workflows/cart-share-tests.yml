@@ -1,0 +1,54 @@
+name: Cart sharing isolated tests
+
+on:
+  pull_request:
+    paths:
+      - 'api/cart-shares.js'
+      - 'lib/cart-share-*.js'
+      - 'theme/assets/diyona-cart-share.js'
+      - 'tests/cart-share-*.test.js'
+      - 'db/cart-shares.sql'
+      - '.github/workflows/cart-share-tests.yml'
+      - 'package*.json'
+  push:
+    paths:
+      - 'api/cart-shares.js'
+      - 'lib/cart-share-*.js'
+      - 'theme/assets/diyona-cart-share.js'
+      - 'tests/cart-share-*.test.js'
+      - 'db/cart-shares.sql'
+      - '.github/workflows/cart-share-tests.yml'
+      - 'package*.json'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: cart_share_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run test:cart-share
+        env:
+          CART_SHARE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/cart_share_test
+      - run: node --test tests/storefront-price-quote.test.js

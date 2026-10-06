@@ -6,6 +6,7 @@
     "sync": "node scripts/sync-nivoda.js",
     "test:sftp": "node scripts/test-sftp.js",
     "test:ai-catalog": "node --test tests/ai-catalog-*.test.js",
+    "test:cart-share": "node --test tests/cart-share-*.test.js",
     "catalog:dry-run": "node scripts/sync-ai-catalog-metafields.js --mode full",
     "catalog:sync": "node scripts/sync-ai-catalog-metafields.js"
   },
