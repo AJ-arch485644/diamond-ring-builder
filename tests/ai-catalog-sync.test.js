@@ -147,6 +147,55 @@ test('maxWrites stops mid-page and restart resumes only the remaining IDs', asyn
   assert.equal(h.queries.length, 1);
 });
 
+test('explicit full backfill writes at most 1000 products and resumes after an unchanged prefix', async () => {
+  const pages = {};
+  for (let index = 0; index < 5; index++) {
+    const start = index * 250 + 1;
+    const end = Math.min(start + 249, 1002);
+    pages[index === 0 ? 'start' : `page-${index + 1}`] = {
+      ids: Array.from({ length: end - start + 1 }, (_, offset) => id(start + offset)),
+      next: end < 1002 ? `page-${index + 2}` : null,
+    };
+  }
+  const h = harness({ count: 1002, pages });
+  h.products.get(id(1)).aiDescription = current('ai_catalog_description', 'Description for Ring 1');
+  h.products.get(id(1)).aiCategory = current('ai_catalog_category', 'Engagement Rings');
+  const first = await h.run({ write: true, maxWrites: 1000, maxProducts: 25000, maxDurationMs: 2700000 });
+  assert.equal(first.status, 'paused');
+  assert.equal(first.written, 1000);
+  assert.equal(first.verifiedWrites, 1000);
+  assert.equal(first.noops, 1);
+  assert.equal(first.checkpointAdvanced, false);
+  assert.equal(h.audits.filter(record => record.type === 'prewrite_backup').length, 1000);
+  assert.equal(h.owns.size, 1000);
+  assert.equal(h.products.get(id(1002)).aiDescription, null);
+  assert.equal(h.state().scans.full.after, 'page-5');
+  assert.deepEqual(h.state().scans.full.pendingPage.products, [{ id: id(1002) }]);
+  assert.equal(h.state().incrementalWatermark, undefined);
+  const second = await h.run({ write: true, maxWrites: 1000, maxProducts: 25000, maxDurationMs: 2700000 });
+  assert.equal(second.resumed, true);
+  assert.equal(second.complete, true);
+  assert.equal(second.written, 1);
+  assert.equal(second.verifiedWrites, 1);
+  assert.equal(second.noops, 0);
+  assert.equal(h.queries.length, 5, 'resume must not replay completed pages');
+  assert.equal(h.state().scans.full, null);
+});
+
+test('larger caps cannot escape the full-scan scope or exceed 1000 writes', async () => {
+  for (const options of [
+    { maxWrites: 1001 }, { mode: 'incremental', maxWrites: 501 },
+    { productIds: [id(1)], maxWrites: 501 },
+  ]) {
+    const h = harness({ count: 1 });
+    const result = await h.run({ write: true, ...options });
+    assert.equal(result.error.code, 'INVALID_SYNC_ARGUMENTS');
+    assert.equal(result.written, 0);
+    assert.deepEqual(h.log, []);
+    assert.deepEqual(h.queries, []);
+  }
+});
+
 test('completed pages persist cursor and restart resumes only after those pages', async () => {
   const h = harness({ count: 3, pages: { start: { ids: [id(1)], next: 'page-2' }, 'page-2': { ids: [id(2), id(3)], next: null } } });
   const first = await h.run({ write: true, maxWrites: 1 });
@@ -188,6 +237,26 @@ test('duration cap pauses without advancing incomplete page and release occurs',
     now: () => new Date(Date.parse('2026-10-02T16:00:00Z') + (++ticks > 4 ? 20 : 0)) });
   assert.equal(result.status, 'paused');
   assert.equal(result.checkpointAdvanced, false);
+  assert.equal(h.state().incrementalWatermark, undefined);
+  assert.equal(h.log.at(-1), 'release');
+});
+
+test('45-minute full slice finishes readback and saves remaining IDs before releasing its lease', async () => {
+  const h = harness({ count: 2 });
+  let time = Date.parse('2026-10-02T16:00:00.000Z');
+  const writePair = h.shopify.setMetafields;
+  h.shopify.setMetafields = async fields => {
+    const result = await writePair(fields);
+    time += 2700000;
+    return result;
+  };
+  const result = await h.run({ write: true, maxWrites: 1000, maxProducts: 25000,
+    maxDurationMs: 2700000, now: () => new Date(time) });
+  assert.equal(result.status, 'paused');
+  assert.equal(result.written, 1);
+  assert.equal(result.verifiedWrites, 1);
+  assert.equal(h.owns.size, 1);
+  assert.deepEqual(h.state().scans.full.pendingPage.products, [{ id: id(2) }]);
   assert.equal(h.state().incrementalWatermark, undefined);
   assert.equal(h.log.at(-1), 'release');
 });

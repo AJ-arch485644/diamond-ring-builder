@@ -12,13 +12,13 @@ on:
         type: boolean
         default: false
       max_writes:
-        description: Maximum products to write (1 to 500)
+        description: 'Maximum products to write (1 to 500; full backfill without product IDs allows 1000)'
         default: '5'
       max_products:
         description: Maximum products to inspect in this slice (1 to 25000)
         default: '250'
       max_duration_seconds:
-        description: Runtime budget (1 to 7200; use 7200 for a complete read-only scan)
+        description: Runtime budget (1 to 7200; use 2700 for manual backfill or 7200 for a complete read-only scan)
         default: '1200'
       product_ids:
         description: Optional comma-separated product IDs for a canary (up to 10)
