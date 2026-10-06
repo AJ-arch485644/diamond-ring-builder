@@ -75,7 +75,8 @@ delimiters, including ampersands or double quotes, is currently refused because
 the live generic property renderer is not consistently escaped. Do not weaken this
 validation without first safely changing and reviewing that renderer.
 
-Limits: 30 lines, quantity 1–10 for ordinary products, quantity one per unique stone
+Limits: one diamond selection (a ring group or a loose diamond), 30 lines total,
+quantity 1–10 for ordinary products, quantity one per unique stone
 and each ring component, 64 KiB request/snapshot bound. Unsupported input is an
 explicit refusal, never silent partial sharing. Cart attributes can be allowlisted
 for storage, but v1 restore refuses nonempty shared attributes because writing them
@@ -197,6 +198,15 @@ Nivoda reservation. The four-hour scheduled import can be delayed. The existing
 import also has unsafe cleanup paths after incomplete imports; this feature does
 not alter or mask those failures. Missing/duplicate rows and upstream failures block
 restoration rather than replacing a selected stone.
+
+The operations service `diyona-ops/lib/shopify/parse-order.ts` currently reduces an
+order to one diamond/setting/size/engraving tuple. Therefore v1 rejects multiple
+diamond selections even when the cart groups are individually valid. The parser's
+setting-SKU fallback can also select a builder diamond or engraving fee because
+it treats any builder line without `Diamond SKU` as the setting. Existing order
+processing is not changed here; validate/fix this downstream identity mapping
+before activation rather than claiming that native cart preservation proves correct
+fulfillment. Raw Shopify line items are retained by that service for investigation.
 
 Run `npm run test:cart-share` and the existing quote/catalog suites. The PostgreSQL
 test runs only with `CART_SHARE_TEST_DATABASE_URL` pointing to localhost database

@@ -15,6 +15,16 @@ function ring() {
 function ordinary(properties = {}) {
   return { currency: 'USD', attributes: {}, items: [{ variant_id: 333, quantity: 1, sku: 'EARRING', properties }] };
 }
+test('multiple ring or loose selections cannot exceed the downstream one-diamond order model',()=>{
+  const first=ring(),second=ring();
+  second.items[0].variant_id=444;second.items[1].variant_id=555;second.items[1].sku='STONE-2';
+  second.items[0].properties['Diamond SKU']='STONE-2';second.items[1].properties._diamond_sku='STONE-2';
+  second.items.forEach(line=>line.properties._diy_operation_v1='source-b');
+  assert.throws(()=>normalizeCart({...first,items:first.items.concat(second.items)}),{code:'MULTIPLE_DIAMONDS_UNSUPPORTED'});
+  const loose=ordinary({_ring_type:'Loose',_diamond_sku:'EARRING',_pending_loose:'true'});
+  assert.throws(()=>normalizeCart({...first,items:first.items.concat(loose.items)}),{code:'MULTIPLE_DIAMONDS_UNSUPPORTED'});
+  assert.equal(normalizeCart({...first,items:first.items.concat(ordinary().items)}).lines.length,3);
+});
 function supplierRow(sku = 'STONE') {
   return { sku, availability: 'available', carat: 1, shape: 'Round', color: 'E', clarity: 'VS1', lab: 'IGI', certificate_number: '12345' };
 }

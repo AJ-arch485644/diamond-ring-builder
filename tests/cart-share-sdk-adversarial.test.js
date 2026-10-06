@@ -136,16 +136,17 @@ test('same recipient notes and unsupported properties remain untouched on refusa
   await assert.rejects(h.prepare(),{code:'DESTINATION_METADATA_PRESENT'});assert.equal(h.cart.note,'gift note');assert.equal(h.adds,0);
 });
 
-test('restore group ownership is fresh and shared only across members of each ring',async()=>{
+test('restore group ownership is fresh and shared only across the ring components',async()=>{
   const h=setup();const members=[];
-  for(let n=1;n<=2;n++) {
+  for(let n=1;n<=1;n++) {
     const sku='STONE-'+n;
     members.push({...product(100+n),sku,properties:{_ring_builder:'true',_ring_type:'Ring',_diamond_sku:sku,'Paired Setting':'Setting','Ring Size':'US 7¼',_diy_operation_v1:'source-op-'+n}});
     members.push({...product(200+n),properties:{_ring_builder:'true','Paired Diamond':'Round','Diamond SKU':sku,'Ring Size':'US 7¼',_diy_operation_v1:'source-op-'+n}});
   }
+  members.push(product(300),product(400));
   h.lines=contract.normalizeCart({currency:'USD',items:members}).lines;
   await h.client.restore(await h.prepare());const props=h.writes[0].map(line=>line.properties);
-  assert.equal(props[0]._diy_operation_v1,props[1]._diy_operation_v1);assert.equal(props[2]._diy_operation_v1,props[3]._diy_operation_v1);
+  assert.equal(props[0]._diy_operation_v1,props[1]._diy_operation_v1);assert.notEqual(props[2]._diy_operation_v1,props[3]._diy_operation_v1);
   assert.notEqual(props[0]._diy_operation_v1,props[2]._diy_operation_v1);assert.ok(props.every(p=>!p._diy_operation_v1.startsWith('source-op')));
   assert.equal(new Set(props.map(p=>p._diy_share_import_v1)).size,1);assert.equal(new Set(props.map(p=>p._diy_share_line_v1)).size,4);
 });
