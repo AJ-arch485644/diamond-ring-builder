@@ -28,7 +28,8 @@ function options(args, env = process.env, now = Date.now) {
     if (!/^\d+$/.test(input) || Number(input) < 1 || Number(input) > limit) throw new Error('INVALID_LIMIT');
     return Number(input);
   };
-  const maxWrites = integer(values['max-writes'], 5, 500);
+  const writeLimit = mode === 'full' && values['product-ids'] === undefined ? 1000 : 500;
+  const maxWrites = integer(values['max-writes'], 5, writeLimit);
   const maxProducts = integer(values['max-products'], 250, 25000);
   const maxDurationMs = integer(values['max-duration-seconds'], 1200, 7200) * 1000;
   const productIds = values['product-ids']?.split(',').filter(Boolean).map(id => {
