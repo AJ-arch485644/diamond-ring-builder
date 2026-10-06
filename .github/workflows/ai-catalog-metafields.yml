@@ -23,6 +23,10 @@ on:
       product_ids:
         description: Optional comma-separated product IDs for a canary (up to 10)
         default: ''
+      expected_head:
+        description: Optional exact reviewed commit SHA; abort metadata work if this run uses another revision
+        type: string
+        default: ''
   schedule:
     - cron: '7,22,37,52 * * * *'
     - cron: '41 5 * * *'
@@ -62,6 +66,7 @@ jobs:
           INPUT_MAX_PRODUCTS: ${{ inputs.max_products }}
           INPUT_MAX_DURATION_SECONDS: ${{ inputs.max_duration_seconds }}
           INPUT_PRODUCT_IDS: ${{ inputs.product_ids }}
+          INPUT_EXPECTED_HEAD: ${{ inputs.expected_head }}
         shell: bash
         run: |
           mode=incremental

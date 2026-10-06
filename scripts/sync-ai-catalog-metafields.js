@@ -6,6 +6,13 @@ const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
 
 function options(args, env = process.env, now = Date.now) {
+  // Workflow dispatch uses a mutable branch. Check the run's immutable revision
+  // before loading credentials or initializing any private runtime clients.
+  const expectedHead = env.INPUT_EXPECTED_HEAD;
+  if (expectedHead !== undefined && expectedHead !== '') {
+    if (typeof expectedHead !== 'string' || !/^[a-f0-9]{40}$/.test(expectedHead)) throw new Error('INVALID_EXPECTED_HEAD');
+    if (env.GITHUB_SHA !== expectedHead) throw new Error('EXPECTED_HEAD_MISMATCH');
+  }
   if (args.includes('--approved-canary')) {
     return require('../lib/ai-catalog-canary').approvedCanaryOptions(args, env, now);
   }
