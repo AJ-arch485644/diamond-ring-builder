@@ -1,7 +1,17 @@
 name: AI Catalog health
+run-name: AI Catalog health notification drill (expected failure; no production check)
 
 on:
   workflow_dispatch:
+    inputs:
+      notification_drill:
+        description: Explicitly run the isolated notification drill; this intentionally fails without checking production
+        required: true
+        type: choice
+        default: 'off'
+        options:
+          - 'off'
+          - run-isolated-notification-drill
   schedule:
     - cron: '13 * * * *'
 
@@ -9,7 +19,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ai-catalog-health
+  group: ${{ github.ref == 'refs/heads/main' && 'ai-catalog-health' || format('ai-catalog-health-notification-drill-{0}', github.ref) }}
   cancel-in-progress: false
 
 jobs:
@@ -31,3 +41,15 @@ jobs:
           SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
           AI_CATALOG_SCHEDULE_ENABLED: ${{ vars.AI_CATALOG_SCHEDULE_ENABLED }}
           AI_CATALOG_WRITES_ENABLED: ${{ vars.AI_CATALOG_WRITES_ENABLED }}
+  notification_drill:
+    name: Isolated notification drill (expected failure; no production access)
+    if: github.repository == 'AJ-arch485644/diamond-ring-builder' && github.ref == 'refs/heads/codex/ai-catalog-health-notification-drill-20261012' && github.event_name == 'workflow_dispatch' && inputs.notification_drill == 'run-isolated-notification-drill' && github.run_attempt == 1
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Emit one labeled diagnostic failure
+        shell: bash
+        run: |
+          printf '%s\n' '::error title=Expected isolated notification drill::Intentional diagnostic failure. No production health check, credentials, Shopify, or database access occurred.'
+          exit 1
