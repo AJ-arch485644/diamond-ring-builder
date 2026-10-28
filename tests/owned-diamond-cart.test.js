@@ -19,7 +19,7 @@ function response() { return {headers:{},setHeader(k,v){this.headers[k]=v;},stat
 
 test('owned mapped variant is reused after private/public/native validation with no creation',async()=>{
   const {stone,visible,data}=fixture();const tables=[];let reads=0;
-  const result=await resolveOwnedDiamond({supabase:client([{data:[stone]},{data:[visible]}],tables),sku:stone.sku,shop:stone.shop_domain,tokenProvider:async()=>'test-token',fetchImpl:async(url,options)=>{reads++;assert.match(url,/2026-10/);const body=JSON.parse(options.body);assert.equal(body.variables.id,stone.variant_id);assert.equal(body.variables.location,stone.location_id);assert.doesNotMatch(body.query,/mutation/);return {ok:true,json:async()=>({data})};}});
+  const result=await resolveOwnedDiamond({supabase:client([{data:[stone]},{data:[visible]}],tables),sku:stone.sku,shop:stone.shop_domain,shopify:{graphql:async(query,variables)=>{reads++;assert.equal(variables.id,stone.variant_id);assert.equal(variables.location,stone.location_id);assert.doesNotMatch(query,/mutation/);return data;}}});
   assert.deepEqual(tables,['dio_select_test_stones','public_diamonds']);assert.equal(reads,1);assert.equal(result.variant_id,20);assert.equal(result.shipping_days,1);assert.equal(result.is_diyona_select,true);
 });
 test('only genuinely unknown owned identity returns null for supplier path',async()=>{
@@ -48,7 +48,7 @@ test('native stock, tracking, publication and price all fail closed',()=>{
 test('public mapping drift and native API failures never fall through',async()=>{
   const {stone,visible}=fixture();
   await assert.rejects(resolveOwnedDiamond({supabase:client([{data:[stone]},{data:[{...visible,shopify_variant_id:'21'}]}]),sku:stone.sku,shop:stone.shop_domain}),/OWNED_MAPPING_MISMATCH/);
-  await assert.rejects(resolveOwnedDiamond({supabase:client([{data:[stone]},{data:[visible]}]),sku:stone.sku,shop:stone.shop_domain,tokenProvider:async()=>'x',fetchImpl:async()=>({ok:false})}),/COMMERCE_TEMPORARILY_UNAVAILABLE/);
+  await assert.rejects(resolveOwnedDiamond({supabase:client([{data:[stone]},{data:[visible]}]),sku:stone.sku,shop:stone.shop_domain,shopify:{graphql:async()=>{throw Error('OWNED_COMMERCE_UNAVAILABLE');}}}),/OWNED_COMMERCE_UNAVAILABLE/);
 });
 test('cart owned error prevents supplier reads and creation; errors are safe and no-store',async()=>{
   let supplierCalls=0;const handler=createHandler({getClient:()=>({from(){supplierCalls++;throw Error('unexpected');}}),resolveOwned:async()=>{const error=new Error('upstream private response');error.code='DIAMOND_UNAVAILABLE';error.status=404;throw error;},env:{SHOPIFY_STORE:'060481-3.myshopify.com'}});
@@ -56,7 +56,7 @@ test('cart owned error prevents supplier reads and creation; errors are safe and
   assert.equal(res.statusCode,404);assert.deepEqual(res.body,{error:'DIAMOND_UNAVAILABLE'});assert.equal(supplierCalls,0);assert.equal(res.headers['Vercel-CDN-Cache-Control'],'no-store');
 });
 test('owned cart returns existing numeric identity and preserves Loose customs intent only',async()=>{
-  const calls=[];const handler=createHandler({getClient:()=>({}),resolveOwned:async()=>({shopify_id:10,variant_id:20,inventory_item_id:30,title:'Diamond',reused:true,inventory_source:'owned',is_diyona_select:true,shipping_days:1}),setHS:async(...args)=>calls.push(args),createSupplier:async()=>assert.fail('must not create'),setShipping:async()=>assert.fail('dispatch is already synced'),env:{SHOPIFY_STORE:'060481-3.myshopify.com'}});
+  const calls=[];const handler=createHandler({getClient:()=>({}),resolveOwned:async()=>({shopify_id:10,variant_id:20,inventory_item_id:30,title:'Diamond',reused:true,inventory_source:'owned',is_diyona_select:true,shipping_days:1}),setOwnedHS:async(...args)=>calls.push(args),setHS:async()=>assert.fail('owned must not use supplier token'),createSupplier:async()=>assert.fail('must not create'),setShipping:async()=>assert.fail('dispatch is already synced'),env:{SHOPIFY_STORE:'060481-3.myshopify.com'}});
   const res=response();await handler({method:'POST',body:{sku:'MB25-74',type:'Loose',price:1,is_diyona_select:false}},res);
   assert.equal(res.statusCode,200);assert.equal(res.body.variant_id,20);assert.equal('inventory_item_id' in res.body,false);assert.deepEqual(calls,[[30,'7104.91']]);
 });

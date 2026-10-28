@@ -1,6 +1,7 @@
 'use strict';
 const { resolveOwnedDiamond, problem } = require('../lib/owned-diamond-cart');
 const { diamondTitle } = require('../lib/diamond-title');
+const { setOwnedInventoryHSCode } = require('../lib/owned-shopify');
 
 let cachedToken = null;
 let tokenExpiry = 0;
@@ -43,7 +44,7 @@ function defaultClient() {
 }
 function createHandler({ getClient = defaultClient, resolveOwned = resolveOwnedDiamond,
   findSupplierVariant = findExistingVariantBySku, createSupplier = createShopifyProduct,
-  setShipping = setVariantMetafield, setHS = setInventoryHSCode, env = process.env } = {}) {
+  setShipping = setVariantMetafield, setHS = setInventoryHSCode, setOwnedHS = setOwnedInventoryHSCode, env = process.env } = {}) {
   return async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -68,7 +69,7 @@ function createHandler({ getClient = defaultClient, resolveOwned = resolveOwnedD
       if (owned) {
         // Product, price, dispatch and inventory already exist. Keep the legacy
         // purchase-intent customs classification without creating or restocking.
-        await setHS(owned.inventory_item_id,hsCode);
+        await setOwnedHS(owned.inventory_item_id,hsCode);
         const { inventory_item_id, ...publicResult } = owned;
         return res.status(200).json(publicResult);
       }
