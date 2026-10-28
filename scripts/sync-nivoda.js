@@ -95,16 +95,24 @@ async function readReservedSkus(supabase) {
     const { data, error } = await supabase
       .schema('ops')
       .from('orders')
-      .select('diamond_id')
-      .not('diamond_id', 'is', null)
+      .select('diamond_id,diamond_lines')
       .neq('production_status', 'cancelled')
+      .order('id', { ascending: true })
       .range(offset, offset + PAGE - 1);
 
     if (error) {
       throw new Error('RESERVATION_READ_FAILED');
     }
     if (!data || data.length === 0) break;
-    data.forEach(o => { if (o.diamond_id) skus.add(o.diamond_id); });
+    data.forEach(order => {
+      // Historical orders have only diamond_id. New orders snapshot every
+      // line; owned lines must never change the supplier feed's flags.
+      if (Array.isArray(order.diamond_lines) && order.diamond_lines.length) {
+        for (const line of order.diamond_lines) {
+          if (line.inventory_source === 'supplier' && line.quantity > 0 && line.sku) skus.add(line.sku);
+        }
+      } else if (order.diamond_id) skus.add(order.diamond_id);
+    });
     if (data.length < PAGE) break;
     offset += PAGE;
   }
@@ -142,7 +150,7 @@ async function upsertBatch(supabase,batch,{sleep = ms => new Promise(resolve => 
   for (let attempt=0; attempt<attempts; attempt++) {
     const {error} = await supabase.from('diamonds').upsert(batch,{onConflict:'nivoda_id',ignoreDuplicates:false});
     if (!error) return;
-    const retryable = ['57014','53300','53400','40001','40P01','PGRST000','PGRST001','PGRST002','PGRST003'].includes(error.code) || !error.code;
+    const retryable = ['57014','53300','53400','40001','40P01','PGRST000','PGRST001','PGRST002','PGRST003'].includes(error.code);
     if (!retryable || attempt+1===attempts) throw new Error('SUPPLIER_BATCH_FAILED');
     await sleep((attempt+1)*2000);
   }

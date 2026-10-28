@@ -22,9 +22,13 @@ hyphens. The old supplier Select curation writer is retired; image QC remains.
 
 ## Release order
 
-1. Deploy the database projection and lifecycle fields before this backend.
-2. Verify the backend Shopify app can read mapped inventory and Online Store
-   publication `135477526844`; the resolver fails closed if those reads fail.
+1. Deploy the database projection, lifecycle fields, Ops per-line order
+   migration and supplier reservation guard before this backend. The supplier
+   importer requires `diamond_lines`; cart checks require the protected
+   `ops.supplier_order_reservations` view.
+2. Provision the separate owned OAuth client with inventory and publication
+   permissions. The existing Ring Builder token lacks those scopes. Verify the
+   owned client can read mapped stock and Online Store publication `135477526844`.
 3. Stage this backend, verify the supplier path still resolves without publishing
    a new product, and verify draft owned identities return unavailable.
 4. Promote an approved owned canary through the sync service. Verify its native
@@ -34,17 +38,22 @@ hyphens. The old supplier Select curation writer is retired; image QC remains.
 
 ## Verification
 
-`node --test tests/*.test.js` passes174tests, including18new owned/search/import
-tests. Tests use isolated mocks; no tests create Shopify products or mutate the
+`node --test tests/*.test.js` covers owned cart identity, credentials, search and
+supplier import safety. Tests use isolated mocks; no tests create Shopify products or mutate the
 live database. Commerce tests run in a secret-free GitHub workflow.
 
 ## Remaining operational limits
 
 The supplier import still refreshes rows in place. Latest observed run on
-28October2026 parsed662,188rows but timed out after30minutes around175,000rows,
-including a database statement timeout. The bounded repair allows120minutes,
+October 28, 2026 parsed 662,188 rows but timed out after 30 minutes around 175,000 rows,
+including a database statement timeout. The bounded repair allows 120 minutes,
 prevents overlapping workflow writers, retries failed batches, and aborts before
-stale deletion on unrecovered errors or empty input. It does not provide atomic
+stale deletion on unrecovered errors or empty input. Reservations include every
+supplier line in mixed orders; owned lines never change supplier flags. The
+public catalog independently excludes active supplier order allocations, so an
+in-place overwrite or newly inserted feed row cannot relist an ordered stone.
+Cart checks the protected allocation view before supplier preparation and before
+returning a variant; failed reservation reads fail closed. This does not provide atomic
 feed-generation promotion. That requires a separate staging/generation design.
 
 Existing supplier first-creation concurrency is not a distributed transaction;

@@ -2,6 +2,7 @@
 const { resolveOwnedDiamond, problem } = require('../lib/owned-diamond-cart');
 const { diamondTitle } = require('../lib/diamond-title');
 const { setOwnedInventoryHSCode } = require('../lib/owned-shopify');
+const { assertSupplierUnreserved } = require('../lib/supplier-reservations');
 
 let cachedToken = null;
 let tokenExpiry = 0;
@@ -43,6 +44,7 @@ function defaultClient() {
   return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 }
 function createHandler({ getClient = defaultClient, resolveOwned = resolveOwnedDiamond,
+  checkSupplierReservation = assertSupplierUnreserved,
   findSupplierVariant = findExistingVariantBySku, createSupplier = createShopifyProduct,
   setShipping = setVariantMetafield, setHS = setInventoryHSCode, setOwnedHS = setOwnedInventoryHSCode, env = process.env } = {}) {
   return async function handler(req, res) {
@@ -82,15 +84,20 @@ function createHandler({ getClient = defaultClient, resolveOwned = resolveOwnedD
       const diamond = rows[0];
       if (diamond.sku !== sku || diamond.inventory_source !== 'supplier' || !Number.isFinite(Number(diamond.price_usd)) || Number(diamond.price_usd) <= 0) throw problem('DIAMOND_UNAVAILABLE',404);
       const existing = await findSupplierVariant(supabase,shop,diamond.sku);
+      // A purchase can arrive during the Shopify lookup. Recheck immediately
+      // before either supplier reuse or creation, and again before returning.
+      await checkSupplierReservation(supabase,diamond.sku);
       if (existing) {
         await setShipping(existing.variant_id,diamond.max_delivery_days || 10);
         await setHS(existing.inventory_item_id,hsCode);
+        await checkSupplierReservation(supabase,diamond.sku);
         return res.status(200).json({shopify_id:existing.shopify_id,variant_id:existing.variant_id,title:existing.title,reused:true,inventory_source:'supplier',is_diyona_select:false});
       }
       const product = await createSupplier(diamond,type);
       const variant = product.variants[0];
       await setShipping(variant.id,diamond.max_delivery_days || 10);
       await setHS(variant.inventory_item_id,hsCode);
+      await checkSupplierReservation(supabase,diamond.sku);
       return res.status(200).json({shopify_id:product.id,variant_id:variant.id,title:product.title,inventory_source:'supplier',is_diyona_select:false});
     } catch (error) {
       // Shopify bodies, access tokens, database details and stack traces remain private.

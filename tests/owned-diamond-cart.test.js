@@ -13,7 +13,7 @@ function fixture() {
   return {stone,visible,data};
 }
 function client(results, calls=[]) {
-  return {from(table){calls.push(table);const query={};for(const method of ['select','eq','limit'])query[method]=()=>query;query.then=(yes,no)=>Promise.resolve(results.shift()).then(yes,no);return query;}};
+  return {schema(name){assert.equal(name,'ops');return this;},from(table){calls.push(table);const query={};for(const method of ['select','eq','limit'])query[method]=()=>query;query.then=(yes,no)=>Promise.resolve(table==='supplier_order_reservations'?{data:[]}:results.shift()).then(yes,no);return query;}};
 }
 function response() { return {headers:{},setHeader(k,v){this.headers[k]=v;},status(v){this.statusCode=v;return this;},json(v){this.body=v;return this;},end(){return this;}}; }
 
@@ -62,7 +62,7 @@ test('owned cart returns existing numeric identity and preserves Loose customs i
 });
 test('supplier path reads only visible supplier row and preserves existing create flow',async()=>{
   const tables=[];const calls=[];const handler=createHandler({getClient:()=>client([{data:[{sku:'SUP-1',inventory_source:'supplier',price_usd:500,max_delivery_days:6}]}],tables),resolveOwned:async()=>null,findSupplierVariant:async()=>null,createSupplier:async(d,type)=>{calls.push(['create',d.sku,type]);return{id:11,title:'Supplier',variants:[{id:21,inventory_item_id:31}]};},setShipping:async(...args)=>calls.push(['shipping',...args]),setHS:async(...args)=>calls.push(['hs',...args]),env:{SHOPIFY_STORE:'060481-3.myshopify.com'}});
-  const res=response();await handler({method:'GET',query:{sku:'SUP-1'}},res);assert.equal(res.statusCode,200);assert.deepEqual(tables,['public_diamonds']);assert.deepEqual(calls,[['create','SUP-1','Ring'],['shipping',21,6],['hs',31,'7113.19']]);assert.equal(res.body.is_diyona_select,false);
+  const res=response();await handler({method:'GET',query:{sku:'SUP-1'}},res);assert.equal(res.statusCode,200);assert.deepEqual(tables,['public_diamonds','supplier_order_reservations','supplier_order_reservations']);assert.deepEqual(calls,[['create','SUP-1','Ring'],['shipping',21,6],['hs',31,'7113.19']]);assert.equal(res.body.is_diyona_select,false);
 });
 test('title and product links keep owned stock codes out of customer-facing titles and slug parsing',()=>{
   assert.equal(diamondTitle({carat:'3.050',shape:'Radiant',color:'G',clarity:'VVS2',sku:'MB25-74'}),'3.05ct Radiant G VVS2 Lab Diamond');

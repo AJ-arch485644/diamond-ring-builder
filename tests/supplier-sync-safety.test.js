@@ -5,7 +5,12 @@ const fs=require('node:fs/promises');
 const os=require('node:os');
 const path=require('node:path');
 const {readReservedSkus,upsertBatch,syncToDatabase}=require('../scripts/sync-nivoda');
-function reservationQuery(result) {const q={};for(const key of ['select','not','neq','range'])q[key]=()=>q;q.then=(yes,no)=>Promise.resolve(result).then(yes,no);return q;}
+function reservationQuery(result) {const q={};for(const key of ['select','not','neq','order','range'])q[key]=()=>q;q.then=(yes,no)=>Promise.resolve(result).then(yes,no);return q;}
+test('reservation scan preserves every supplier line in mixed orders and never reserves owned aliases',async()=>{
+  const data=[{diamond_id:'OLD'},{diamond_id:'OWNED',diamond_lines:[{sku:'OWNED',inventory_source:'owned',quantity:1},{sku:'SECOND',inventory_source:'supplier',quantity:1},{sku:'THIRD',inventory_source:'supplier',quantity:1}]}];
+  const db={schema(){return{from(){return reservationQuery({data});}};}};
+  assert.deepEqual([...await readReservedSkus(db)].sort(),['OLD','SECOND','THIRD']);
+});
 test('partial reservation read failure aborts instead of returning a partial allowlist',async()=>{
   let pages=0;const db={schema(){return{from(){return reservationQuery(++pages===1?{data:Array.from({length:1000},(_,i)=>({diamond_id:'SKU'+i}))}:{error:{message:'timeout'}});}};}};
   await assert.rejects(readReservedSkus(db),/RESERVATION_READ_FAILED/);assert.equal(pages,2);
