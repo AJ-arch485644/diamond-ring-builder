@@ -1,3 +1,4 @@
+const { storefrontUrl } = require('../lib/catalog-links');
 // Data access via Supabase REST (service key) — the raw-Postgres DATABASE_URL
 // credential went stale and was 500ing this sitemap.
 const { createClient } = require('@supabase/supabase-js');
@@ -14,11 +15,9 @@ async function fetchAll(limit) {
   while (rows.length < limit) {
     const want = Math.min(CHUNK, limit - rows.length);
     const { data, error } = await supabase
-      .from('diamonds')
-      .select('sku, shape, carat, color, clarity, lab, certificate_number, updated_at')
-      .eq('availability', 'available')
-      .eq('is_lab_grown', true)
-      .order('price_usd', { ascending: false })
+      .from('public_diamonds')
+      .select('sku, shape, carat, color, clarity, lab, certificate_number, inventory_source, product_handle, catalog_updated_at')
+      .order('is_diyona_select', { ascending: false }).order('price_usd', { ascending: false }).order('sku', { ascending: true })
       .range(rows.length, rows.length + want - 1);
     if (error) throw new Error(error.message);
     rows = rows.concat(data || []);
@@ -42,8 +41,8 @@ module.exports = async function handler(req, res) {
     const rows = await fetchAll(50000);
 
     const urls = rows.map(row => {
-      const lastmod = row.updated_at
-        ? new Date(row.updated_at).toISOString().split('T')[0]
+      const lastmod = row.catalog_updated_at
+        ? new Date(row.catalog_updated_at).toISOString().split('T')[0]
         : new Date().toISOString().split('T')[0];
       // Build descriptive slug: 2.11ct-emerald-f-si1-igi-LG622472504-AFABAD71E
       const slug = [
@@ -56,7 +55,7 @@ module.exports = async function handler(req, res) {
         row.sku
       ].filter(Boolean).join('-').replace(/[^a-z0-9.-]/gi, '-').replace(/-+/g, '-');
       return `  <url>
-    <loc>https://diyona.com/a/lab-diamonds/${esc(slug)}</loc>
+    <loc>${esc(row.inventory_source === 'owned' ? storefrontUrl(row) : 'https://diyona.com/a/lab-diamonds/' + slug)}</loc>
     <lastmod>${lastmod}</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.6</priority>
