@@ -1,3 +1,9 @@
+'use strict';
+const { resolveOwnedDiamond, problem } = require('../lib/owned-diamond-cart');
+const { diamondTitle } = require('../lib/diamond-title');
+const { setOwnedInventoryHSCode } = require('../lib/owned-shopify');
+const { assertSupplierUnreserved } = require('../lib/supplier-reservations');
+
 let cachedToken = null;
 let tokenExpiry = 0;
 
@@ -18,83 +24,89 @@ async function getShopifyToken(supabase, shop) {
 // instead of minting a duplicate product on every call (the root cause of the 21% duplicate pile-up).
 async function findExistingVariantBySku(supabase, shop, sku) {
   const token = await getShopifyToken(supabase, shop);
-  const query = `query($q:String!){ productVariants(first:1, query:$q){ edges { node { legacyResourceId inventoryItem { legacyResourceId } product { legacyResourceId title status } } } } }`;
+  const query = `query($q:String!){ productVariants(first:50, query:$q){ edges { node { sku legacyResourceId inventoryItem { legacyResourceId } product { legacyResourceId title status } } } } }`;
   const r = await fetch(`https://${shop}/admin/api/2024-01/graphql.json`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
-    body: JSON.stringify({ query, variables: { q: 'sku:' + sku } })
+    body: JSON.stringify({ query, variables: { q: 'sku:' + JSON.stringify(sku) } })
   });
   const j = await r.json();
-  const edge = j && j.data && j.data.productVariants && j.data.productVariants.edges && j.data.productVariants.edges[0];
-  if (!edge) return null;
-  const n = edge.node;
-  if (n.product && n.product.status && n.product.status !== 'ACTIVE') return null; // skip archived/draft leftovers
+  if (!r.ok || j.errors?.length || !Array.isArray(j.data?.productVariants?.edges)) throw problem('COMMERCE_TEMPORARILY_UNAVAILABLE', 503);
+  const matches = j.data.productVariants.edges.map(edge => edge.node).filter(node => node.sku === sku && node.product?.status === 'ACTIVE');
+  if (matches.length > 1 || j.data.productVariants.edges.length === 50) throw problem('SUPPLIER_IDENTITY_AMBIGUOUS');
+  if (!matches.length) return null;
+  const n = matches[0];
   return { variant_id: Number(n.legacyResourceId), shopify_id: Number(n.product.legacyResourceId), title: n.product.title, inventory_item_id: n.inventoryItem ? Number(n.inventoryItem.legacyResourceId) : null };
 }
 
-module.exports = async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.status(200).end();
+function defaultClient() {
   const { createClient } = require('@supabase/supabase-js');
-  const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_KEY
-  );
-  const sku = req.query.sku || req.body?.sku;
-  const type = req.query.type || req.body?.type || 'Ring';
-  if (!sku) return res.status(400).json({ error: 'SKU required' });
-  // HS code follows purchase intent: bought loose -> loose lab diamond (7104.91);
-  // bought with a setting -> ships as a finished engagement ring, so the diamond
-  // line is classified as jewelry (7113.19) and duties total up on the whole ring.
-  // This runs before add-to-cart, so checkout duty calculation sees the right code.
-  const hsCode = type === 'Loose' ? '7104.91' : '7113.19';
-  try {
-    const { data: diamond, error } = await supabase
-      .from('diamonds')
-      .select('*')
-      .eq('sku', sku)
-      .eq('availability', 'available')
-      .single();
-    if (error || !diamond) {
-      return res.status(404).json({ error: 'Diamond not found or unavailable' });
+  return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+}
+function createHandler({ getClient = defaultClient, resolveOwned = resolveOwnedDiamond,
+  checkSupplierReservation = assertSupplierUnreserved,
+  findSupplierVariant = findExistingVariantBySku, createSupplier = createShopifyProduct,
+  setShipping = setVariantMetafield, setHS = setInventoryHSCode, setOwnedHS = setOwnedInventoryHSCode, env = process.env } = {}) {
+  return async function handler(req, res) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    // Legacy theme callers use GET. Keep that contract while ensuring a stock
+    // resolution or supplier creation can never be replayed from a CDN cache.
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+    res.setHeader('CDN-Cache-Control', 'no-store');
+    res.setHeader('Vercel-CDN-Cache-Control', 'no-store');
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    if (!['GET','POST'].includes(req.method)) return res.status(405).json({error:'METHOD_NOT_ALLOWED'});
+    const sku = req.query?.sku ?? req.body?.sku;
+    const type = req.query?.type ?? req.body?.type ?? 'Ring';
+    if (typeof sku !== 'string' || !sku.trim() || sku !== sku.trim() || sku.length > 150 || /[\x00-\x1f\x7f]/.test(sku)) return res.status(400).json({error:'INVALID_SKU'});
+    if (!['Ring','Loose'].includes(type)) return res.status(400).json({error:'INVALID_PURCHASE_TYPE'});
+    const hsCode = type === 'Loose' ? '7104.91' : '7113.19';
+    try {
+      const supabase = getClient();
+      const shop = env.SHOPIFY_STORE;
+      if (typeof shop !== 'string' || !/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(shop)) throw problem('COMMERCE_TEMPORARILY_UNAVAILABLE',503);
+      const owned = await resolveOwned({supabase,sku,shop});
+      if (owned) {
+        // Product, price, dispatch and inventory already exist. Keep the legacy
+        // purchase-intent customs classification without creating or restocking.
+        await setOwnedHS(owned.inventory_item_id,hsCode);
+        const { inventory_item_id, ...publicResult } = owned;
+        return res.status(200).json(publicResult);
+      }
+      // Supplier aliases suppressed by an owned certificate are absent from the
+      // unified view and must not be created through the raw feed table either.
+      const { data: rows, error } = await supabase.from('public_diamonds')
+        .select('*').eq('sku',sku).eq('inventory_source','supplier').limit(2);
+      if (error || !Array.isArray(rows)) throw problem('CATALOG_TEMPORARILY_UNAVAILABLE',503);
+      if (rows.length !== 1) throw problem(rows.length ? 'SUPPLIER_IDENTITY_AMBIGUOUS' : 'DIAMOND_UNAVAILABLE',rows.length ? 409 : 404);
+      const diamond = rows[0];
+      if (diamond.sku !== sku || diamond.inventory_source !== 'supplier' || !Number.isFinite(Number(diamond.price_usd)) || Number(diamond.price_usd) <= 0) throw problem('DIAMOND_UNAVAILABLE',404);
+      const existing = await findSupplierVariant(supabase,shop,diamond.sku);
+      // A purchase can arrive during the Shopify lookup. Recheck immediately
+      // before either supplier reuse or creation, and again before returning.
+      await checkSupplierReservation(supabase,diamond.sku);
+      if (existing) {
+        await setShipping(existing.variant_id,diamond.max_delivery_days || 10);
+        await setHS(existing.inventory_item_id,hsCode);
+        await checkSupplierReservation(supabase,diamond.sku);
+        return res.status(200).json({shopify_id:existing.shopify_id,variant_id:existing.variant_id,title:existing.title,reused:true,inventory_source:'supplier',is_diyona_select:false});
+      }
+      const product = await createSupplier(diamond,type);
+      const variant = product.variants[0];
+      await setShipping(variant.id,diamond.max_delivery_days || 10);
+      await setHS(variant.inventory_item_id,hsCode);
+      await checkSupplierReservation(supabase,diamond.sku);
+      return res.status(200).json({shopify_id:product.id,variant_id:variant.id,title:product.title,inventory_source:'supplier',is_diyona_select:false});
+    } catch (error) {
+      // Shopify bodies, access tokens, database details and stack traces remain private.
+      return res.status(error.status || 503).json({error:error.code || 'COMMERCE_TEMPORARILY_UNAVAILABLE'});
     }
-
-    // Idempotent by SKU: reuse an existing product if one was already created for this diamond.
-    // Prevents duplicate products from repeat add-to-cart, reloads during the pending window, or retries.
-    const shop = process.env.SHOPIFY_STORE;
-    const existing = await findExistingVariantBySku(supabase, shop, diamond.sku);
-    if (existing) {
-      await setVariantMetafield(existing.variant_id, diamond.max_delivery_days || 10);
-      // Restamp on reuse: the same diamond may have been touched by the other flow
-      // (or by the one-time 7104.91 catalog backfill) — the latest purchase intent wins.
-      await setInventoryHSCode(existing.inventory_item_id, hsCode);
-      return res.status(200).json({ shopify_id: existing.shopify_id, variant_id: existing.variant_id, title: existing.title, reused: true });
-    }
-
-    const shopifyProduct = await createShopifyProduct(diamond, type);
-    const variantId = shopifyProduct.variants[0].id;
-
-    // Use the diamond's actual fulfillment time for both Loose and Ring flows.
-    // Cart's MAX across line items ensures the slower of diamond/setting drives the date.
-    // Fallback 10 matches the setting default + diamond PDP fallback, so null-data diamonds promise consistently across surfaces.
-    const shippingDays = diamond.max_delivery_days || 10;
-    await setVariantMetafield(variantId, shippingDays);
-
-    // HS code enables Shopify duties/import-tax calculation at checkout for intl orders.
-    await setInventoryHSCode(shopifyProduct.variants[0].inventory_item_id, hsCode);
-
-    res.status(200).json({
-      shopify_id: shopifyProduct.id,
-      variant_id: variantId,
-      title: shopifyProduct.title
-    });
-  } catch (err) {
-    console.error('Create product error:', err);
-    res.status(500).json({ error: 'Failed to create product', detail: err.message });
-  }
-};
+  };
+}
+module.exports = createHandler();
+module.exports.createHandler = createHandler;
 
 async function createShopifyProduct(diamond, type) {
   const { createClient } = require('@supabase/supabase-js');
@@ -110,7 +122,7 @@ async function createShopifyProduct(diamond, type) {
     .single();
   if (!tokenRow) throw new Error('No Shopify token found. Install the app first.');
   const shopifyUrl = `https://${shop}/admin/api/2024-01/products.json`;
-  const title = `${diamond.carat}ct ${diamond.shape} ${diamond.color} ${diamond.clarity} Lab Diamond`;
+  const title = diamondTitle(diamond);
   const response = await fetch(shopifyUrl, {
     method: 'POST',
     headers: {

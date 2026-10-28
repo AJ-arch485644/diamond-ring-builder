@@ -1,3 +1,4 @@
+const { storefrontUrl } = require('../lib/catalog-links');
 /**
  * OpenAI (ChatGPT shopping / ACP) Product Feed Generator
  * Pulls diamond inventory from Supabase and generates a gzipped TSV feed per
@@ -108,7 +109,7 @@ function buildSlug(d) {
 }
 
 function buildLink(d) {
-  return `${SITE_URL}/a/lab-diamonds/${buildSlug(d)}`;
+  return d.inventory_source === 'owned' ? storefrontUrl(d) : `${SITE_URL}/a/lab-diamonds/${buildSlug(d)}`;
 }
 
 function escTsv(val) {
@@ -147,7 +148,8 @@ async function fetchWithRetry(supabase, offset, batchSize, retries = 3) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     const { data, error } = await supabase
       .from('public_diamonds')
-      .select('sku,shape,carat,color,clarity,cut,polish,symmetry,lab,certificate_number,price_usd,image_url,video_url,length,width,depth_mm,ratio')
+      .select('sku,shape,carat,color,clarity,cut,polish,symmetry,lab,certificate_number,price_usd,image_url,video_url,length,width,depth_mm,ratio,inventory_source,is_diyona_select,product_handle')
+      .order('is_diyona_select', { ascending: false }).order('sku', { ascending: true })
       .range(offset, offset + batchSize - 1);
 
     if (!error) return { data, error: null };

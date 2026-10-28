@@ -5,10 +5,7 @@ const { parse } = require('csv-parse');
 const SftpClient = require('ssh2-sftp-client');
 const fs = require('fs');
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
+function defaultClient() { return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY); }
 
 const BATCH_SIZE = 500;
 const RECONCILE_BATCH_SIZE = 500;
@@ -87,9 +84,8 @@ function normalizeShape(shape) {
 //      clobber a reservation made by the Shopify webhook.
 //   2. Post-sync, as a safety net for orders that land during the upsert run.
 //
-// Returns a Set of SKUs. Fails open — on query error, returns the partial set
-// it has. The upsert default remains 'available', which is safe (storefront
-// still filters and the post-sync pass will catch misses).
+// Returns a complete Set of SKUs or aborts. A partial reservation set must never
+// relist an ordered stone during an in-place supplier refresh.
 async function readReservedSkus(supabase) {
   const skus = new Set();
   let offset = 0;
@@ -99,17 +95,24 @@ async function readReservedSkus(supabase) {
     const { data, error } = await supabase
       .schema('ops')
       .from('orders')
-      .select('diamond_id')
-      .not('diamond_id', 'is', null)
+      .select('diamond_id,diamond_lines')
       .neq('production_status', 'cancelled')
+      .order('id', { ascending: true })
       .range(offset, offset + PAGE - 1);
 
     if (error) {
-      console.error('[reservations] ops.orders read failed:', error.message);
-      return skus;
+      throw new Error('RESERVATION_READ_FAILED');
     }
     if (!data || data.length === 0) break;
-    data.forEach(o => { if (o.diamond_id) skus.add(o.diamond_id); });
+    data.forEach(order => {
+      // Historical orders have only diamond_id. New orders snapshot every
+      // line; owned lines must never change the supplier feed's flags.
+      if (Array.isArray(order.diamond_lines) && order.diamond_lines.length) {
+        for (const line of order.diamond_lines) {
+          if (line.inventory_source === 'supplier' && line.quantity > 0 && line.sku) skus.add(line.sku);
+        }
+      } else if (order.diamond_id) skus.add(order.diamond_id);
+    });
     if (data.length < PAGE) break;
     offset += PAGE;
   }
@@ -133,12 +136,25 @@ async function applyReservations(supabase, reservedSkus) {
       .neq('availability', 'reserved')
       .select('sku');
     if (error) {
-      console.error('[reconcile] diamonds update failed:', error.message);
-      continue;
+      throw new Error('RESERVATION_RECONCILIATION_FAILED');
     }
     flipped += data?.length || 0;
   }
   return flipped;
+}
+
+// The same feed generation and nivoda_id make retries idempotent. Do not
+// continue to cleanup after an exhausted batch: stale deletion after partial
+// success would erase valid supplier rows that merely failed to refresh.
+async function upsertBatch(supabase,batch,{sleep = ms => new Promise(resolve => setTimeout(resolve,ms)), attempts = 3} = {}) {
+  for (let attempt=0; attempt<attempts; attempt++) {
+    const {error} = await supabase.from('diamonds').upsert(batch,{onConflict:'nivoda_id',ignoreDuplicates:false});
+    if (!error) return;
+    const retryable = ['57014','53300','53400','40001','40P01','PGRST000','PGRST001','PGRST002','PGRST003'].includes(error.code);
+    if (!retryable || attempt+1===attempts) throw new Error('SUPPLIER_BATCH_FAILED');
+    await sleep((attempt+1)*2000);
+  }
+  throw new Error('SUPPLIER_BATCH_FAILED');
 }
 
 async function downloadCSV() {
@@ -160,7 +176,7 @@ async function downloadCSV() {
   }
 }
 
-async function syncToDatabase(csvPath) {
+async function syncToDatabase(csvPath, { supabase = defaultClient(), sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   console.log('Starting database sync...');
   const syncTimestamp = new Date().toISOString();
   console.log(`Sync timestamp: ${syncTimestamp}`);
@@ -186,22 +202,15 @@ async function syncToDatabase(csvPath) {
   }
 
   console.log(`Parsed ${records.length} valid lab-grown diamonds from CSV`);
+  if (!records.length) throw new Error('EMPTY_SUPPLIER_FEED');
 
   // Step 1: Upsert all current diamonds
   let inserted = 0;
   let errors = 0;
   for (let i = 0; i < records.length; i += BATCH_SIZE) {
     const batch = records.slice(i, i + BATCH_SIZE);
-    const { error } = await supabase
-      .from('diamonds')
-      .upsert(batch, { onConflict: 'nivoda_id', ignoreDuplicates: false });
-
-    if (error) {
-      console.error(`Batch error at ${i}:`, error.message);
-      errors++;
-    } else {
-      inserted += batch.length;
-    }
+    await upsertBatch(supabase,batch,{sleep});
+    inserted += batch.length;
     if ((i / BATCH_SIZE) % 50 === 0) {
       console.log(`Progress: ${inserted}/${records.length} upserted (${errors} batch errors)`);
     }
@@ -215,7 +224,7 @@ async function syncToDatabase(csvPath) {
     sync_ts: syncTimestamp
   });
   if (markError) {
-    console.error('Mark stale error:', markError.message);
+    throw new Error('STALE_MARK_FAILED');
   } else {
     console.log('Stale diamonds marked unavailable');
   }
@@ -229,7 +238,7 @@ async function syncToDatabase(csvPath) {
     .eq('availability', 'unavailable');
 
   if (deleteError) {
-    console.error('Delete error:', deleteError.message);
+    throw new Error('STALE_DELETE_FAILED');
   } else {
     console.log(`Deleted ${count || 0} unavailable diamonds`);
   }
@@ -259,4 +268,5 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) main();
+module.exports = { mapRow, normalizeShape, readReservedSkus, applyReservations, upsertBatch, syncToDatabase };

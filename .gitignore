@@ -6,3 +6,4 @@ node_modules/
 
 # Private Catalog runtime material must never enter this public repository.
 .ai-catalog-private/
+.env*

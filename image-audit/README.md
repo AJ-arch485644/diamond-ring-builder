@@ -45,22 +45,13 @@ confirmed bad image. Confirmed SKUs go into the theme's
 `assets/bad-image-skus.json` (both themes), which the configurator already
 enforces fail-open.
 
-## Diyona Select refresh (`select-refresh.js`)
+## Retired supplier Select curation
 
-Runs after the audit in the same workflow. Rebuilds the Select candidate pool
-nightly (every shape/carat/color/clarity combo, engine gates, 7% price band),
-scores candidates the `select_audit` ledger hasn't seen — shape CNN must agree
-with the cert AND the cut-quality CNN (`model/cut-cnn.onnx`, trained on the
-2026-08-10 certification fleet's 6.7k graded images + owner calibration) must
-clear its precision-tuned threshold — then publishes the whitelist as
-`assets/select-certified.json` to both themes.
-
-Safety rails: `select-owner-denied.json` is a permanent veto the CNN can never
-override; publishing HOLDS for human review if the whitelist would shrink >30%
-or grow >50% in one night; stones that leave inventory need no action (the
-storefront engine only badges rendered stones). First run seeds the ledger from
-`select-fleet-certified.json` (the human-verified fleet certification). If the
-cut model file is absent the step no-ops.
+Diyona Select now means physically held owned inventory from the unified public
+catalog. The former nightly curation step has been removed from the workflow.
+`select-refresh.js` exits without writing if manually invoked. Historical models
+and ledgers remain as audit data; they no longer define a customer badge.
+The image audit and flag-review reporting continue independently.
 
 ## Someday, deliberately (not now)
 

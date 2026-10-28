@@ -4,16 +4,22 @@ on:
     - cron: '0 */4 * * *'
   workflow_dispatch:
 
+# A complete 660k-row feed currently needs approximately 100 minutes. Keep one
+# writer at a time; timeout/error must never trigger stale cleanup.
+concurrency:
+  group: nivoda-supplier-sync
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - run: npm install
+          node-version: '22'
+      - run: npm ci --ignore-scripts
       - run: node scripts/sync-nivoda.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

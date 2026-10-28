@@ -1,3 +1,4 @@
+const { storefrontUrl } = require('../../lib/catalog-links');
 // Data access via Supabase REST (service key) — the raw-Postgres DATABASE_URL
 // credential went stale and was 500ing every SEO page and sub-sitemap.
 const { createClient } = require('@supabase/supabase-js');
@@ -16,10 +17,8 @@ async function fetchChunked(columns, orderCol, ascending, limit, offset) {
   while (rows.length < limit) {
     const want = Math.min(CHUNK, limit - rows.length);
     const { data, error } = await supabase
-      .from('diamonds')
+      .from('public_diamonds')
       .select(columns)
-      .eq('availability', 'available')
-      .eq('is_lab_grown', true)
       .order(orderCol, { ascending })
       .range(pos, pos + want - 1);
     if (error) throw new Error(error.message);
@@ -65,7 +64,7 @@ function buildPage(d) {
   const cut = (d.cut && String(d.cut).trim() && d.cut !== '-') ? d.cut : null;
   const title = `${d.carat}ct ${d.shape} ${d.color} ${d.clarity} Lab Diamond | ${d.lab} ${d.certificate_number} | Diyona`;
   const desc = `Shop this ${d.carat} carat ${d.shape} cut lab-grown diamond. ${d.color} color, ${d.clarity} clarity${cut ? `, ${cut} cut` : ''}. ${d.lab} certified #${d.certificate_number}. Free shipping, 30-day returns.`;
-  const canonical = `https://diyona.com/a/lab-diamonds/${slug}`;
+  const canonical = d.inventory_source === 'owned' ? storefrontUrl(d) : `https://diyona.com/a/lab-diamonds/${slug}`;
   const image = d.image_url || 'https://diyona.com/cdn/shop/files/diyona-logo.png';
   const ringBuilderUrl = `https://diyona.com/pages/diamond-detail?sku=${encodeURIComponent(d.sku)}&ring_builder=true`;
   const looseUrl = `https://diyona.com/pages/diamond-detail?sku=${encodeURIComponent(d.sku)}`;
@@ -441,6 +440,7 @@ function build404() {
 
 module.exports = async function handler(req, res) {
   let { sku } = req.query;
+  if (typeof sku !== 'string' || !sku || sku.length > 500) return res.status(400).send(build404());
 
   // Serve sitemap index at /a/lab-diamonds/sitemap.xml
   // Uses 20 pages of 25,000 each = 500K max diamonds (adjust if inventory grows)
@@ -471,7 +471,7 @@ module.exports = async function handler(req, res) {
       const offset = (page - 1) * perPage;
       // Lightweight query — only fetch what we need for the URL
       const rows = await fetchChunked(
-        'sku, shape, carat, color, clarity, lab, certificate_number',
+        'sku, shape, carat, color, clarity, lab, certificate_number, inventory_source, product_handle',
         'sku', true, perPage, offset
       );
       if (rows.length === 0) {
@@ -483,7 +483,7 @@ module.exports = async function handler(req, res) {
       const today = new Date().toISOString().split('T')[0];
       const urls = rows.map(row => {
         const slug = [row.carat + 'ct', (row.shape||'').toLowerCase(), (row.color||'').toLowerCase(), (row.clarity||'').toLowerCase(), (row.lab||'').toLowerCase(), row.certificate_number||'', row.sku].filter(Boolean).join('-').replace(/[^a-z0-9.-]/gi, '-').replace(/-+/g, '-');
-        return `<url><loc>https://diyona.com/a/lab-diamonds/${esc(slug)}</loc><lastmod>${today}</lastmod><changefreq>daily</changefreq><priority>0.6</priority></url>`;
+        return `<url><loc>${esc(row.inventory_source === 'owned' ? storefrontUrl(row) : 'https://diyona.com/a/lab-diamonds/' + slug)}</loc><lastmod>${today}</lastmod><changefreq>daily</changefreq><priority>0.6</priority></url>`;
       }).join('\n');
       const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>`;
       res.setHeader('Content-Type', 'application/xml; charset=utf-8');
@@ -512,17 +512,17 @@ module.exports = async function handler(req, res) {
     const DETAIL_COLS = `sku, shape, carat, color, clarity, cut, polish, symmetry,
               fluorescence, lab, price_usd, length, width,
               depth_mm, depth_percent, table_percent,
-              image_url, video_url, certificate_url, certificate_number`;
+              image_url, video_url, certificate_url, certificate_number, inventory_source, product_handle`;
     let { data: rows, error } = await supabase
-      .from('diamonds').select(DETAIL_COLS).eq('sku', sku).limit(1);
+      .from('public_diamonds').select(DETAIL_COLS).eq('sku', sku).limit(2);
     if (error) throw new Error(error.message);
     if ((!rows || !rows.length) && possibleSku !== sku) {
       ({ data: rows, error } = await supabase
-        .from('diamonds').select(DETAIL_COLS).eq('sku', possibleSku).limit(1));
+        .from('public_diamonds').select(DETAIL_COLS).eq('sku', possibleSku).limit(2));
       if (error) throw new Error(error.message);
     }
 
-    if (!rows || !rows.length) {
+    if (!rows || rows.length !== 1) {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
       return res.status(404).send(build404());

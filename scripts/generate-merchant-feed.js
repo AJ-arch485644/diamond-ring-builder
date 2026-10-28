@@ -1,3 +1,4 @@
+const { storefrontUrl } = require('../lib/catalog-links');
 /**
  * Google Merchant Center Feed Generator
  * Pulls diamond inventory from Supabase and generates a TSV feed file.
@@ -84,7 +85,7 @@ function buildDescription(d) {
 }
 
 function buildLink(d) {
-  return `${SITE_URL}/pages/diamond-detail?sku=${encodeURIComponent(d.sku)}`;
+  return storefrontUrl(d);
 }
 
 function colorBucket(color) {
@@ -161,6 +162,7 @@ async function fetchWithRetry(supabase, offset, batchSize, retries = 3) {
     const { data, error } = await supabase
       .from('public_diamonds')
       .select('*')
+      .order('is_diyona_select', { ascending: false }).order('sku', { ascending: true })
       .range(offset, offset + batchSize - 1);
 
     if (!error) return { data, error: null };
