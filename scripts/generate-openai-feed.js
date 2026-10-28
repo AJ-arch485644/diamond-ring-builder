@@ -1,3 +1,4 @@
+const { catalogBatches } = require('../lib/catalog-export');
 const { storefrontUrl } = require('../lib/catalog-links');
 /**
  * OpenAI (ChatGPT shopping / ACP) Product Feed Generator
@@ -141,28 +142,6 @@ function mapDiamond(d) {
   };
 }
 
-// ─── Resilient fetching (same pattern as the GMC feed) ────────────
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-async function fetchWithRetry(supabase, offset, batchSize, retries = 3) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    const { data, error } = await supabase
-      .from('public_diamonds')
-      .select('sku,shape,carat,color,clarity,cut,polish,symmetry,lab,certificate_number,price_usd,image_url,video_url,length,width,depth_mm,ratio,inventory_source,is_diyona_select,product_handle')
-      .order('is_diyona_select', { ascending: false }).order('sku', { ascending: true })
-      .range(offset, offset + batchSize - 1);
-
-    if (!error) return { data, error: null };
-
-    console.warn(`  Attempt ${attempt}/${retries} failed at offset ${offset}: ${error.message}`);
-    if (attempt < retries) {
-      await sleep(attempt * 3000);
-    } else {
-      return { data: null, error };
-    }
-  }
-}
-
 // ─── Main ─────────────────────────────────────────────────────────
 async function main() {
   const supabase = createClient(
@@ -173,30 +152,13 @@ async function main() {
   const limit = parseInt(process.env.LIMIT) || Infinity;
   console.log('Fetching diamonds from Supabase...');
 
-  let allDiamonds = [];
-  let offset = 0;
-  let keepGoing = true;
-
-  while (keepGoing && allDiamonds.length < limit) {
-    const batchSize = Math.min(BATCH_SIZE, limit - allDiamonds.length);
-    const { data, error } = await fetchWithRetry(supabase, offset, batchSize);
-
-    if (error) {
-      console.error('Supabase error after retries:', error.message);
-      process.exit(1);
-    }
-
-    if (!data || data.length === 0) {
-      keepGoing = false;
-    } else {
-      allDiamonds = allDiamonds.concat(data);
-      offset += batchSize;
-      console.log(`  Fetched ${allDiamonds.length} so far...`);
-      if (data.length < batchSize) keepGoing = false;
-      if ((offset / BATCH_SIZE) % 50 === 0) await sleep(2000);
-    }
+  const allDiamonds = [];
+  const columns = 'sku,shape,carat,color,clarity,cut,polish,symmetry,lab,certificate_number,price_usd,image_url,video_url,length,width,depth_mm,ratio,inventory_source,is_diyona_select,product_handle';
+  for await (const batch of catalogBatches(supabase, { columns, batchSize: BATCH_SIZE })) {
+    allDiamonds.push(...batch.slice(0, limit - allDiamonds.length));
+    console.log(`  Fetched ${allDiamonds.length} so far...`);
+    if (allDiamonds.length >= limit) break;
   }
-
   console.log(`Total diamonds fetched: ${allDiamonds.length}`);
 
   const rows = allDiamonds.map(mapDiamond).filter(Boolean);

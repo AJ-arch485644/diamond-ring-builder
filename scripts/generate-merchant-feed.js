@@ -1,3 +1,4 @@
+const { catalogBatches } = require('../lib/catalog-export');
 const { storefrontUrl } = require('../lib/catalog-links');
 /**
  * Google Merchant Center Feed Generator
@@ -16,7 +17,7 @@ const path = require('path');
 const SITE_URL = 'https://diyona.com';
 const BRAND = 'Diyona';
 const FEED_FILENAME = 'diyona-diamonds.tsv';
-const BATCH_SIZE = 10000; // Requires Supabase Max Rows set to 10000+
+const BATCH_SIZE = 10000; // Export cursor also detects lower server response caps.
 
 // ─── Google Merchant Columns ──────────────────────────────────────
 const COLUMNS = [
@@ -154,30 +155,6 @@ function mapDiamond(d) {
   };
 }
 
-// ─── Helpers for resilient fetching ───────────────────────────────
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-async function fetchWithRetry(supabase, offset, batchSize, retries = 3) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    const { data, error } = await supabase
-      .from('public_diamonds')
-      .select('*')
-      .order('is_diyona_select', { ascending: false }).order('sku', { ascending: true })
-      .range(offset, offset + batchSize - 1);
-
-    if (!error) return { data, error: null };
-
-    console.warn(`  Attempt ${attempt}/${retries} failed at offset ${offset}: ${error.message}`);
-    if (attempt < retries) {
-      const backoff = attempt * 3000; // 3s, 6s, 9s
-      console.log(`  Waiting ${backoff / 1000}s before retry...`);
-      await sleep(backoff);
-    } else {
-      return { data: null, error };
-    }
-  }
-}
-
 // ─── Main ─────────────────────────────────────────────────────────
 async function main() {
   const supabase = createClient(
@@ -187,34 +164,11 @@ async function main() {
 
   console.log('Fetching diamonds from Supabase...');
 
-  let allDiamonds = [];
-  let offset = 0;
-  let keepGoing = true;
-
-  while (keepGoing) {
-    const { data, error } = await fetchWithRetry(supabase, offset, BATCH_SIZE);
-
-    if (error) {
-      console.error('Supabase error after retries:', error.message);
-      process.exit(1);
-    }
-
-    if (!data || data.length === 0) {
-      keepGoing = false;
-    } else {
-      allDiamonds = allDiamonds.concat(data);
-      offset += BATCH_SIZE;
-      console.log(`  Fetched ${allDiamonds.length} so far...`);
-      if (data.length < BATCH_SIZE) keepGoing = false;
-
-      // Small delay every 50 batches to avoid overwhelming Supabase
-      if ((offset / BATCH_SIZE) % 50 === 0) {
-        console.log('  Pausing 2s to ease server load...');
-        await sleep(2000);
-      }
-    }
+  const allDiamonds = [];
+  for await (const batch of catalogBatches(supabase, { batchSize: BATCH_SIZE })) {
+    allDiamonds.push(...batch);
+    console.log(`  Fetched ${allDiamonds.length} so far...`);
   }
-
   console.log(`Total diamonds fetched: ${allDiamonds.length}`);
 
   // Map to feed rows, filter out any nulls (bad data)
