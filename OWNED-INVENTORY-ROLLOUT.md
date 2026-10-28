@@ -20,6 +20,12 @@ pagination. SEO and feeds use the same safe catalog and link owned stones to the
 native product handle, avoiding ambiguous slug parsing for stock codes with
 hyphens. The old supplier Select curation writer is retired; image QC remains.
 
+`GET`/`POST /api/search` returns at most `per_page` rows and uses one extra matching
+row to compute `Diamonds.has_more`. `Diamonds.total` is `null` by default; callers
+must use `has_more` for navigation. Set `count=exact` explicitly when a total is
+required; broad exact counts can be expensive. Filtering and owned-first ordering
+remain global before pagination. No approximate count is substituted.
+
 ## Release order
 
 1. Deploy the database projection, lifecycle fields, Ops per-line order
