@@ -29,6 +29,21 @@ test('filter validation rejects expressions, malformed numbers, invalid paginati
   assert.equal(parseFilters({per_page:'100'}).perPage,50);
   assert.deepEqual(parseFilters({select_only:'true'}).filters,[['eq','is_diyona_select',true]]);
 });
+
+test('PostgREST sort requests match storefront catalog index null ordering for every supported sort',async()=>{
+  const {createClient}=require('@supabase/supabase-js');
+  let requestUrl;
+  const client=createClient('https://catalog.invalid','test-key',{
+    auth:{persistSession:false,autoRefreshToken:false},
+    global:{fetch:async url=>{requestUrl=new URL(url);return new Response('[]',{status:200,headers:{'content-type':'application/json','content-range':'*/0'}});}}
+  });
+  for(const [sort,column,direction] of [['price_asc','price_usd','asc'],['price_desc','price_usd','desc'],['carat_asc','carat','asc'],['carat_desc','carat','desc']]){
+    const result=await queryCatalog(client,parseFilters({sort,per_page:'3'}));
+    assert.equal(result.error,null);
+    assert.equal(requestUrl.searchParams.get('order'),`is_diyona_select.desc,${column}.${direction},sku.asc`);
+    assert.equal(requestUrl.searchParams.get('limit'),'3');
+  }
+});
 test('search returns actual total and no cache; private errors remain hidden',async()=>{
   const handler=createHandler({getClient:()=>catalog([{sku:'OWN',is_diyona_select:true,price_usd:200}])});
   const res={headers:{},setHeader(k,v){this.headers[k]=v;},status(n){this.code=n;return this;},json(body){this.body=body;},end(){}};
