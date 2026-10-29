@@ -1,5 +1,6 @@
 const { catalogBatches } = require('../lib/catalog-export');
 const { storefrontUrl } = require('../lib/catalog-links');
+const { selectMetadataForFeed, reportInvalidSelectMetadata } = require('../lib/feed-select-metadata');
 /**
  * OpenAI (ChatGPT shopping / ACP) Product Feed Generator
  * Pulls diamond inventory from Supabase and generates a gzipped TSV feed per
@@ -7,9 +8,9 @@ const { storefrontUrl } = require('../lib/catalog-links');
  * to the rolling `feeds` GitHub Release (the ~80MB artifact exceeds Supabase
  * Storage's per-file cap).
  *
- * Sibling of generate-merchant-feed.js — same fetch loop and copy builders,
- * but links point at the server-rendered /a/lab-diamonds/ SEO pages (crawlable
- * without JS) instead of the JS-hydrated /pages/diamond-detail?sku= pages.
+ * Sibling of generate-merchant-feed.js. Both use the shared factual renderer
+ * for owned Select descriptions. Owned links use native Shopify products;
+ * supplier links use server-rendered /a/lab-diamonds/ SEO pages.
  *
  * Required env vars:
  *   SUPABASE_URL
@@ -38,7 +39,6 @@ const COLUMNS = [
   'url',
   'image_url',
   'video_url',
-  'mpn',
   'price',
   'availability',
   'is_eligible_search',
@@ -62,20 +62,24 @@ function normalizeCut(raw) {
   return map[upper] || raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
 }
 
-function buildTitle(d) {
+function buildTitle(d, selectMetadata = selectMetadataForFeed(d)) {
+  const cut = selectMetadata
+    ? selectMetadata.additionalProperties.find(property => property.name === 'Cut grade')?.value || ''
+    : normalizeCut(d.cut);
   // Spec cap: 150 chars — this pattern tops out well under it.
   const parts = [
     `${d.carat}ct`,
     d.shape,
     d.color,
     d.clarity,
-    normalizeCut(d.cut),
+    cut,
     'Lab Grown Diamond',
   ];
   return parts.filter(Boolean).join(' ');
 }
 
-function buildDescription(d) {
+function buildDescription(d, selectMetadata = selectMetadataForFeed(d)) {
+  if (selectMetadata) return selectMetadata.plainText;
   const cut = normalizeCut(d.cut);
   const dims = (d.length && d.width && d.depth_mm)
     ? `${d.length} × ${d.width} × ${d.depth_mm} mm`
@@ -119,20 +123,26 @@ function escTsv(val) {
 }
 
 // ─── Map a Supabase row → OpenAI feed row ─────────────────────────
-function mapDiamond(d) {
+function mapDiamond(d, options) {
   const price = Number(d.price_usd) || 0;
   if (price <= 0) return null;
   if (!d.image_url) return null; // image_url is required by the spec
+  let selectMetadata;
+  try { selectMetadata = selectMetadataForFeed(d); }
+  catch (error) {
+    if (!/^SELECT_[A-Z_]+$/.test(error.code || '')) throw error;
+    options?.onInvalidMetadata?.(d, error);
+    return null;
+  }
 
   return {
     item_id: d.sku,
-    title: buildTitle(d),
-    description: buildDescription(d),
+    title: buildTitle(d, selectMetadata),
+    description: buildDescription(d, selectMetadata),
     brand: BRAND,
     url: buildLink(d),
     image_url: d.image_url,
     video_url: d.video_url || '',
-    mpn: (d.certificate_number || '').slice(0, 70),
     price: `${price.toFixed(2)} USD`,
     availability: 'in_stock',
     is_eligible_search: 'true',
@@ -153,7 +163,7 @@ async function main() {
   console.log('Fetching diamonds from Supabase...');
 
   const allDiamonds = [];
-  const columns = 'sku,shape,carat,color,clarity,cut,polish,symmetry,lab,certificate_number,price_usd,image_url,video_url,length,width,depth_mm,ratio,inventory_source,is_diyona_select,product_handle';
+  const columns = 'sku,shape,carat,color,clarity,cut,polish,symmetry,fluorescence,lab,certificate_number,certificate_url,growth_method,price_usd,image_url,video_url,length,width,depth_mm,ratio,table_percent,depth_percent,inventory_source,is_diyona_select,is_lab_grown,shopify_product_id,shopify_variant_id,product_handle';
   for await (const batch of catalogBatches(supabase, { columns, batchSize: BATCH_SIZE })) {
     allDiamonds.push(...batch.slice(0, limit - allDiamonds.length));
     console.log(`  Fetched ${allDiamonds.length} so far...`);
@@ -161,9 +171,9 @@ async function main() {
   }
   console.log(`Total diamonds fetched: ${allDiamonds.length}`);
 
-  const rows = allDiamonds.map(mapDiamond).filter(Boolean);
+  const rows = allDiamonds.map(d => mapDiamond(d, { onInvalidMetadata: reportInvalidSelectMetadata })).filter(Boolean);
   const skipped = allDiamonds.length - rows.length;
-  console.log(`Valid feed rows: ${rows.length} (skipped ${skipped} without price or image)`);
+  console.log(`Valid feed rows: ${rows.length} (skipped ${skipped} without price or image, or with invalid owned metadata)`);
 
   const outDir = path.join(__dirname, '..', 'output');
   if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
@@ -198,7 +208,11 @@ async function main() {
   console.log(`Feed written to ${outPath} (${(rawBytes / 1024 / 1024).toFixed(1)} MB raw, ${(gzBytes / 1024 / 1024).toFixed(1)} MB gzipped, ${rows.length} products)`);
 }
 
-main().catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(err => {
+    console.error('Fatal error:', err);
+    process.exit(1);
+  });
+}
+
+module.exports = { COLUMNS, buildTitle, buildDescription, buildLink, mapDiamond, escTsv, main };

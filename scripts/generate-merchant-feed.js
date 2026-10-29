@@ -1,5 +1,6 @@
 const { catalogBatches } = require('../lib/catalog-export');
 const { storefrontUrl } = require('../lib/catalog-links');
+const { selectMetadataForFeed, reportInvalidSelectMetadata } = require('../lib/feed-select-metadata');
 /**
  * Google Merchant Center Feed Generator
  * Pulls diamond inventory from Supabase and generates a TSV feed file.
@@ -55,19 +56,23 @@ function normalizeCut(raw) {
   return map[upper] || raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
 }
 
-function buildTitle(d) {
+function buildTitle(d, selectMetadata = selectMetadataForFeed(d)) {
+  const cut = selectMetadata
+    ? selectMetadata.additionalProperties.find(property => property.name === 'Cut grade')?.value || ''
+    : normalizeCut(d.cut);
   const parts = [
     `${d.carat}ct`,
     d.shape,
     d.color,
     d.clarity,
-    normalizeCut(d.cut),
+    cut,
     'Lab Grown Diamond',
   ];
   return parts.filter(Boolean).join(' ');
 }
 
-function buildDescription(d) {
+function buildDescription(d, selectMetadata = selectMetadataForFeed(d)) {
+  if (selectMetadata) return selectMetadata.plainText;
   const cut = normalizeCut(d.cut);
   const dims = (d.length && d.width && d.depth_mm)
     ? `${d.length} × ${d.width} × ${d.depth_mm} mm`
@@ -130,14 +135,21 @@ function escTsv(val) {
 }
 
 // ─── Map a Supabase row → Merchant feed row ──────────────────────
-function mapDiamond(d) {
+function mapDiamond(d, options) {
   const price = Number(d.price_usd) || 0;
   if (price <= 0) return null; // skip diamonds without a price
+  let selectMetadata;
+  try { selectMetadata = selectMetadataForFeed(d); }
+  catch (error) {
+    if (!/^SELECT_[A-Z_]+$/.test(error.code || '')) throw error;
+    options?.onInvalidMetadata?.(d, error);
+    return null;
+  }
 
   return {
     id: d.sku,
-    title: buildTitle(d),
-    description: buildDescription(d),
+    title: buildTitle(d, selectMetadata),
+    description: buildDescription(d, selectMetadata),
     link: buildLink(d),
     image_link: d.image_url || '',
     price: `${price.toFixed(2)} USD`,
@@ -172,8 +184,8 @@ async function main() {
   console.log(`Total diamonds fetched: ${allDiamonds.length}`);
 
   // Map to feed rows, filter out any nulls (bad data)
-  const rows = allDiamonds.map(mapDiamond).filter(Boolean);
-  console.log(`Valid feed rows: ${rows.length}`);
+  const rows = allDiamonds.map(d => mapDiamond(d, { onInvalidMetadata: reportInvalidSelectMetadata })).filter(Boolean);
+  console.log(`Valid feed rows: ${rows.length} (skipped ${allDiamonds.length - rows.length} without price or with invalid owned metadata)`);
 
   // Build TSV
   const header = COLUMNS.join('\t');
@@ -194,7 +206,11 @@ async function main() {
   console.log(`Feed written to ${outPath} (${sizeMB} MB, ${rows.length} products)`);
 }
 
-main().catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(err => {
+    console.error('Fatal error:', err);
+    process.exit(1);
+  });
+}
+
+module.exports = { COLUMNS, buildTitle, buildDescription, buildLink, mapDiamond, escTsv, main };
