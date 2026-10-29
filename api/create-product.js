@@ -63,16 +63,19 @@ function createHandler({ getClient = defaultClient, resolveOwned = resolveOwnedD
     if (typeof sku !== 'string' || !sku.trim() || sku !== sku.trim() || sku.length > 150 || /[\x00-\x1f\x7f]/.test(sku)) return res.status(400).json({error:'INVALID_SKU'});
     if (!['Ring','Loose'].includes(type)) return res.status(400).json({error:'INVALID_PURCHASE_TYPE'});
     const hsCode = type === 'Loose' ? '7104.91' : '7113.19';
+    const expectOwned = (req.query?.inventory_source ?? req.body?.inventory_source) === 'owned';
     try {
       const supabase = getClient();
       const shop = env.SHOPIFY_STORE;
       if (typeof shop !== 'string' || !/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(shop)) throw problem('COMMERCE_TEMPORARILY_UNAVAILABLE',503);
-      const owned = await resolveOwned({supabase,sku,shop});
+      const owned = await resolveOwned({supabase,sku,shop,type,expectOwned});
+      if (!owned && expectOwned) throw problem('DIAMOND_UNAVAILABLE',404);
       if (owned) {
         // Product, price, dispatch and inventory already exist. Keep the legacy
         // purchase-intent customs classification without creating or restocking.
-        await setOwnedHS(owned.inventory_item_id,hsCode);
-        const { inventory_item_id, ...publicResult } = owned;
+        // The native read already confirmed matching metadata on the common path.
+        if (owned.needs_hs_update !== false) await setOwnedHS(owned.inventory_item_id,hsCode);
+        const { inventory_item_id, needs_hs_update, ...publicResult } = owned;
         return res.status(200).json(publicResult);
       }
       // Supplier aliases suppressed by an owned certificate are absent from the
