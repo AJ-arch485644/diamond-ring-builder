@@ -4,11 +4,16 @@ on:
     - cron: '0 */4 * * *'
   workflow_dispatch:
 
-# A complete 660k-row feed currently needs approximately 100 minutes. Keep one
-# writer at a time; timeout/error must never trigger stale cleanup.
+# A healthy full-feed run (~650k rows) takes roughly 10-25 minutes; much longer
+# means the database is struggling (see docs/nivoda-sync.md). Keep one writer
+# at a time; timeout/error must never trigger stale cleanup.
 concurrency:
   group: nivoda-supplier-sync
   cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
 
 jobs:
   sync:
@@ -20,7 +25,11 @@ jobs:
         with:
           node-version: '22'
       - run: npm ci --ignore-scripts
-      - run: node scripts/sync-nivoda.js
+      - id: sync
+        # The script aborts its own upsert after 100 minutes. This backstop
+        # covers a hung connection and still leaves time to raise the alert.
+        timeout-minutes: 110
+        run: node scripts/sync-nivoda.js
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
@@ -29,3 +38,48 @@ jobs:
           NIVODA_FTP_PASS: ${{ secrets.NIVODA_FTP_PASS }}
           NIVODA_FTP_PATH: ${{ secrets.NIVODA_FTP_PATH }}
           MARKUP_PERCENT: ${{ secrets.MARKUP_PERCENT }}
+
+      # One open issue tracks a bad stretch: the first problem opens it and
+      # mentions the repository owner, later problems comment on it, and the
+      # next healthy run closes it. Neither step can change the sync's result.
+      - name: Raise sync alert
+        if: failure() || cancelled() || steps.sync.outputs.slow == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          JOB_STATUS: ${{ job.status }}
+          UPSERT_MINUTES: ${{ steps.sync.outputs.upsert_minutes }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUNBOOK_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/nivoda-sync.md
+        run: |
+          title='Sync Nivoda Diamonds needs attention'
+          case "$JOB_STATUS" in
+            success) what="finished, but writing the feed took ${UPSERT_MINUTES} minutes; healthy runs take about 10-25." ;;
+            cancelled) what="was cancelled before it finished, so it may not have removed sold-out diamonds or refreshed prices." ;;
+            *) what="failed, so it may not have removed sold-out diamonds or refreshed prices. The run log has the error." ;;
+          esac
+          issue=$(gh issue list --state open --limit 100 --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n 1)
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "[This run]($RUN_URL) $what"
+          else
+            gh issue create --title "$title" --body "@$OWNER [this sync run]($RUN_URL) $what
+
+          Start with the [sync runbook]($RUNBOOK_URL). This issue closes itself after the next healthy run."
+          fi
+
+      - name: Close sync alert after a healthy run
+        if: success() && steps.sync.outputs.slow != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          UPSERT_MINUTES: ${{ steps.sync.outputs.upsert_minutes }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title='Sync Nivoda Diamonds needs attention'
+          issue=$(gh issue list --state open --limit 100 --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n 1)
+          if [ -n "$issue" ]; then
+            gh issue close "$issue" --comment "Healthy again: [this run]($RUN_URL) wrote the feed in ${UPSERT_MINUTES} minutes."
+          fi

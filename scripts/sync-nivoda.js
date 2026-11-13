@@ -9,6 +9,13 @@ function defaultClient() { return createClient(process.env.SUPABASE_URL, process
 
 const BATCH_SIZE = 500;
 const RECONCILE_BATCH_SIZE = 500;
+// A healthy full-feed upsert (~650k rows) takes roughly 10-25 minutes. The
+// deadline sits well inside the workflow's 120-minute job limit so a degraded
+// database ends in a clear failure (and an alert) instead of a silent
+// cancellation; the slow threshold flags runs that finish but are trending
+// toward that limit. See docs/nivoda-sync.md.
+const UPSERT_DEADLINE_MINUTES = 100;
+const SLOW_UPSERT_MINUTES = 45;
 
 function mapRow(row, syncTimestamp, reservedSkus) {
   const length = parseFloat(row['length']) || null;
@@ -176,7 +183,20 @@ async function downloadCSV() {
   }
 }
 
-async function syncToDatabase(csvPath, { supabase = defaultClient(), sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+// Hands values to later workflow steps through $GITHUB_OUTPUT; no-op outside Actions.
+function writeWorkflowOutput(values, env = process.env) {
+  if (!env.GITHUB_OUTPUT) return;
+  fs.appendFileSync(env.GITHUB_OUTPUT, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(''));
+}
+
+async function syncToDatabase(csvPath, {
+  supabase = defaultClient(),
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  now = Date.now,
+  deadlineMinutes = UPSERT_DEADLINE_MINUTES,
+  slowMinutes = SLOW_UPSERT_MINUTES,
+  reportOutput = writeWorkflowOutput
+} = {}) {
   console.log('Starting database sync...');
   const syncTimestamp = new Date().toISOString();
   console.log(`Sync timestamp: ${syncTimestamp}`);
@@ -204,18 +224,31 @@ async function syncToDatabase(csvPath, { supabase = defaultClient(), sleep = ms 
   console.log(`Parsed ${records.length} valid lab-grown diamonds from CSV`);
   if (!records.length) throw new Error('EMPTY_SUPPLIER_FEED');
 
-  // Step 1: Upsert all current diamonds
+  // Step 1: Upsert all current diamonds. Passing the deadline aborts here,
+  // before any stale cleanup, exactly like an exhausted batch.
+  const upsertStarted = now();
+  const elapsedMinutes = () => (now() - upsertStarted) / 60000;
   let inserted = 0;
   let errors = 0;
   for (let i = 0; i < records.length; i += BATCH_SIZE) {
+    if (elapsedMinutes() > deadlineMinutes) {
+      console.error(`Upsert passed its ${deadlineMinutes}-minute deadline after ${inserted}/${records.length} rows; healthy runs finish in about 10-25 minutes. Check public.diamonds for leftover invalid indexes (docs/nivoda-sync.md).`);
+      throw new Error('SUPPLIER_SYNC_DEADLINE_EXCEEDED');
+    }
     const batch = records.slice(i, i + BATCH_SIZE);
     await upsertBatch(supabase,batch,{sleep});
     inserted += batch.length;
     if ((i / BATCH_SIZE) % 50 === 0) {
-      console.log(`Progress: ${inserted}/${records.length} upserted (${errors} batch errors)`);
+      console.log(`Progress: ${inserted}/${records.length} upserted (${errors} batch errors) after ${elapsedMinutes().toFixed(1)} min`);
     }
   }
-  console.log(`Upsert complete: ${inserted}/${records.length} (${errors} batch errors)`);
+  const upsertMinutes = elapsedMinutes();
+  console.log(`Upsert complete: ${inserted}/${records.length} (${errors} batch errors) in ${upsertMinutes.toFixed(1)} min`);
+  const slow = upsertMinutes > slowMinutes;
+  if (slow) {
+    console.log(`::warning title=Slow Nivoda sync::Upsert took ${upsertMinutes.toFixed(1)} minutes; healthy runs take about 10-25. Check public.diamonds for leftover invalid indexes (docs/nivoda-sync.md).`);
+  }
+  reportOutput({ upsert_minutes: upsertMinutes.toFixed(1), slow: String(slow) });
 
   // Step 2: Mark stale diamonds as unavailable
   // The RPC filters WHERE availability='available', so reserved rows are safe.
@@ -269,4 +302,4 @@ async function main() {
 }
 
 if (require.main === module) main();
-module.exports = { mapRow, normalizeShape, readReservedSkus, applyReservations, upsertBatch, syncToDatabase };
+module.exports = { mapRow, normalizeShape, readReservedSkus, applyReservations, upsertBatch, syncToDatabase, writeWorkflowOutput };

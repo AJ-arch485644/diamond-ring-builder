@@ -54,7 +54,10 @@ The supplier import still refreshes rows in place. Latest observed run on
 October 28, 2026 parsed 662,188 rows but timed out after 30 minutes around 175,000 rows,
 including a database statement timeout. The bounded repair allows 120 minutes,
 prevents overlapping workflow writers, retries failed batches, and aborts before
-stale deletion on unrecovered errors or empty input. Reservations include every
+stale deletion on unrecovered errors or empty input. Those slow runs were later
+traced to leftover invalid indexes from cancelled `REINDEX CONCURRENTLY` jobs,
+not to feed size; a healthy run takes about 10-25 minutes (see
+`docs/nivoda-sync.md`). Reservations include every
 supplier line in mixed orders; owned lines never change supplier flags. The
 public catalog independently excludes active supplier order allocations, so an
 in-place overwrite or newly inserted feed row cannot relist an ordered stone.
