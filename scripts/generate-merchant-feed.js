@@ -1,6 +1,7 @@
 const { catalogBatches } = require('../lib/catalog-export');
 const { storefrontUrl } = require('../lib/catalog-links');
 const { selectMetadataForFeed, reportInvalidSelectMetadata } = require('../lib/feed-select-metadata');
+const { reportSupplierFreshness } = require('../lib/feed-freshness');
 /**
  * Google Merchant Center Feed Generator
  * Pulls diamond inventory from Supabase and generates a TSV feed file.
@@ -182,6 +183,7 @@ async function main() {
     console.log(`  Fetched ${allDiamonds.length} so far...`);
   }
   console.log(`Total diamonds fetched: ${allDiamonds.length}`);
+  reportSupplierFreshness(allDiamonds);
 
   // Map to feed rows, filter out any nulls (bad data)
   const rows = allDiamonds.map(d => mapDiamond(d, { onInvalidMetadata: reportInvalidSelectMetadata })).filter(Boolean);

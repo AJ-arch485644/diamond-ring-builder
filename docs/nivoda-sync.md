@@ -30,6 +30,12 @@ Every 4 hours (GitHub often starts scheduled runs late), `scripts/sync-nivoda.js
 - A failed, cancelled or slow run opens one issue titled "Sync Nivoda Diamonds
   needs attention" (later problems comment on it) and mentions the repository
   owner. The next healthy run closes it.
+- The Google Merchant and OpenAI feeds raise their own alerts if they publish
+  supplier data that was last fully refreshed more than 24 hours earlier (see
+  `docs/product-feeds.md`).
+- GitHub turns off scheduled workflows in public repositories after 60 days
+  without repository activity. If runs and alerts stop entirely, check that
+  the workflows are still enabled.
 
 ## When runs get slow or time out
 

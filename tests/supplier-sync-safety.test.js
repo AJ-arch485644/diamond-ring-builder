@@ -4,7 +4,8 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs/promises');
 const os=require('node:os');
 const path=require('node:path');
-const {readReservedSkus,upsertBatch,syncToDatabase,writeWorkflowOutput}=require('../scripts/sync-nivoda');
+const {readReservedSkus,upsertBatch,syncToDatabase}=require('../scripts/sync-nivoda');
+const {writeWorkflowOutput}=require('../lib/workflow-output');
 function reservationQuery(result) {const q={};for(const key of ['select','not','neq','order','range'])q[key]=()=>q;q.then=(yes,no)=>Promise.resolve(result).then(yes,no);return q;}
 async function feedFixture(rows) {
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'diyona-timing-test-'));const file=path.join(dir,'feed.csv');

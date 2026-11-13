@@ -4,6 +4,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { parse } = require('csv-parse');
 const SftpClient = require('ssh2-sftp-client');
 const fs = require('fs');
+const { writeWorkflowOutput } = require('../lib/workflow-output');
 
 function defaultClient() { return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY); }
 
@@ -183,12 +184,6 @@ async function downloadCSV() {
   }
 }
 
-// Hands values to later workflow steps through $GITHUB_OUTPUT; no-op outside Actions.
-function writeWorkflowOutput(values, env = process.env) {
-  if (!env.GITHUB_OUTPUT) return;
-  fs.appendFileSync(env.GITHUB_OUTPUT, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(''));
-}
-
 async function syncToDatabase(csvPath, {
   supabase = defaultClient(),
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
@@ -302,4 +297,4 @@ async function main() {
 }
 
 if (require.main === module) main();
-module.exports = { mapRow, normalizeShape, readReservedSkus, applyReservations, upsertBatch, syncToDatabase, writeWorkflowOutput };
+module.exports = { mapRow, normalizeShape, readReservedSkus, applyReservations, upsertBatch, syncToDatabase };

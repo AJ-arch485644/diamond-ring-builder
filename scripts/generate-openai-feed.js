@@ -1,6 +1,7 @@
 const { catalogBatches } = require('../lib/catalog-export');
 const { storefrontUrl } = require('../lib/catalog-links');
 const { selectMetadataForFeed, reportInvalidSelectMetadata } = require('../lib/feed-select-metadata');
+const { reportSupplierFreshness } = require('../lib/feed-freshness');
 /**
  * OpenAI (ChatGPT shopping / ACP) Product Feed Generator
  * Pulls diamond inventory from Supabase and generates a gzipped TSV feed per
@@ -29,6 +30,8 @@ const SITE_URL = 'https://diyona.com';
 const BRAND = 'Diyona';
 const FEED_FILENAME = 'diyona-diamonds-openai.tsv.gz';
 const BATCH_SIZE = 10000;
+// updated_at is not published; it measures how fresh the supplier data is.
+const EXPORT_COLUMNS = 'sku,shape,carat,color,clarity,cut,polish,symmetry,fluorescence,lab,certificate_number,certificate_url,growth_method,price_usd,image_url,video_url,length,width,depth_mm,ratio,table_percent,depth_percent,inventory_source,is_diyona_select,is_lab_grown,shopify_product_id,shopify_variant_id,product_handle,updated_at';
 
 // ─── OpenAI feed columns (spec: developers.openai.com/commerce) ───
 const COLUMNS = [
@@ -163,13 +166,13 @@ async function main() {
   console.log('Fetching diamonds from Supabase...');
 
   const allDiamonds = [];
-  const columns = 'sku,shape,carat,color,clarity,cut,polish,symmetry,fluorescence,lab,certificate_number,certificate_url,growth_method,price_usd,image_url,video_url,length,width,depth_mm,ratio,table_percent,depth_percent,inventory_source,is_diyona_select,is_lab_grown,shopify_product_id,shopify_variant_id,product_handle';
-  for await (const batch of catalogBatches(supabase, { columns, batchSize: BATCH_SIZE })) {
+  for await (const batch of catalogBatches(supabase, { columns: EXPORT_COLUMNS, batchSize: BATCH_SIZE })) {
     allDiamonds.push(...batch.slice(0, limit - allDiamonds.length));
     console.log(`  Fetched ${allDiamonds.length} so far...`);
     if (allDiamonds.length >= limit) break;
   }
   console.log(`Total diamonds fetched: ${allDiamonds.length}`);
+  reportSupplierFreshness(allDiamonds);
 
   const rows = allDiamonds.map(d => mapDiamond(d, { onInvalidMetadata: reportInvalidSelectMetadata })).filter(Boolean);
   const skipped = allDiamonds.length - rows.length;
@@ -215,4 +218,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { COLUMNS, buildTitle, buildDescription, buildLink, mapDiamond, escTsv, main };
+module.exports = { COLUMNS, EXPORT_COLUMNS, buildTitle, buildDescription, buildLink, mapDiamond, escTsv, main };

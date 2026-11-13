@@ -39,9 +39,10 @@ jobs:
           NIVODA_FTP_PATH: ${{ secrets.NIVODA_FTP_PATH }}
           MARKUP_PERCENT: ${{ secrets.MARKUP_PERCENT }}
 
-      # One open issue tracks a bad stretch: the first problem opens it and
-      # mentions the repository owner, later problems comment on it, and the
-      # next healthy run closes it. Neither step can change the sync's result.
+      # scripts/workflow-alert.sh keeps one open issue per bad stretch: the first
+      # problem opens it and mentions the repository owner, later problems
+      # comment on it, and the next healthy run closes it. Neither step can
+      # change the sync's result.
       - name: Raise sync alert
         if: failure() || cancelled() || steps.sync.outputs.slow == 'true'
         continue-on-error: true
@@ -54,20 +55,12 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUNBOOK_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/nivoda-sync.md
         run: |
-          title='Sync Nivoda Diamonds needs attention'
           case "$JOB_STATUS" in
-            success) what="finished, but writing the feed took ${UPSERT_MINUTES} minutes; healthy runs take about 10-25." ;;
-            cancelled) what="was cancelled before it finished, so it may not have removed sold-out diamonds or refreshed prices." ;;
-            *) what="failed, so it may not have removed sold-out diamonds or refreshed prices. The run log has the error." ;;
+            success) note="finished, but writing the feed took ${UPSERT_MINUTES} minutes; healthy runs take about 10-25." ;;
+            cancelled) note="was cancelled before it finished, so it may not have removed sold-out diamonds or refreshed prices." ;;
+            *) note="failed, so it may not have removed sold-out diamonds or refreshed prices. The run log has the error." ;;
           esac
-          issue=$(gh issue list --state open --limit 100 --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n 1)
-          if [ -n "$issue" ]; then
-            gh issue comment "$issue" --body "[This run]($RUN_URL) $what"
-          else
-            gh issue create --title "$title" --body "@$OWNER [this sync run]($RUN_URL) $what
-
-          Start with the [sync runbook]($RUNBOOK_URL). This issue closes itself after the next healthy run."
-          fi
+          bash scripts/workflow-alert.sh raise 'Sync Nivoda Diamonds needs attention' "$note"
 
       - name: Close sync alert after a healthy run
         if: success() && steps.sync.outputs.slow != 'true'
@@ -77,9 +70,4 @@ jobs:
           GH_REPO: ${{ github.repository }}
           UPSERT_MINUTES: ${{ steps.sync.outputs.upsert_minutes }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          title='Sync Nivoda Diamonds needs attention'
-          issue=$(gh issue list --state open --limit 100 --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n 1)
-          if [ -n "$issue" ]; then
-            gh issue close "$issue" --comment "Healthy again: [this run]($RUN_URL) wrote the feed in ${UPSERT_MINUTES} minutes."
-          fi
+        run: bash scripts/workflow-alert.sh resolve 'Sync Nivoda Diamonds needs attention' "wrote the feed in ${UPSERT_MINUTES} minutes."
