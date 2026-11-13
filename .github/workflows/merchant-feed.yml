@@ -10,6 +10,10 @@ concurrency:
   group: merchant-feed
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  issues: write # alert issue, see docs/product-feeds.md
+
 jobs:
   generate-and-upload:
     runs-on: ubuntu-latest
@@ -24,6 +28,7 @@ jobs:
         run: npm install @supabase/supabase-js
 
       - name: Generate feed
+        id: generate
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
@@ -38,3 +43,35 @@ jobs:
           password: ${{ secrets.GMC_SFTP_PASSWORD }}
           localDir: ./output/
           remoteDir: /
+
+      # One open issue per bad stretch: a failed or cancelled run, or one that
+      # published stale supplier data, opens or comments on it, and the next
+      # healthy run closes it. Neither step can change the run's result.
+      - name: Raise feed alert
+        if: failure() || cancelled() || steps.generate.outputs.stale == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          JOB_STATUS: ${{ job.status }}
+          FRESHNESS_NOTE: ${{ steps.generate.outputs.freshness_note }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUNBOOK_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/product-feeds.md
+        run: |
+          case "$JOB_STATUS" in
+            success) note="$FRESHNESS_NOTE" ;;
+            cancelled) note="was cancelled, so the previously published feed is still live." ;;
+            *) note="failed, so the previously published feed is still live. The run log has the error." ;;
+          esac
+          bash scripts/workflow-alert.sh raise 'Google Merchant Feed needs attention' "$note"
+
+      - name: Close feed alert after a healthy run
+        if: success() && steps.generate.outputs.stale != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          FRESHNESS_NOTE: ${{ steps.generate.outputs.freshness_note }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash scripts/workflow-alert.sh resolve 'Google Merchant Feed needs attention' "$FRESHNESS_NOTE"
